@@ -1,28 +1,47 @@
-fn main() {
-    let dim = 80;
-    for y in 0..dim {
-        for x in 0..dim * 2 {
-            let x = (f64::from(x) / 2.0 - f64::from(dim) / 2.0) / f64::from(dim * 1) * 4.0;
-            let y = (f64::from(y)       - f64::from(dim) / 2.0) / f64::from(dim * 1) * 4.0;
-            print!("{}", if calc(x, y) { "@" } else { " " });
+struct Complex {
+    real: f64,
+    imag: f64,
+}
+
+impl Complex {
+    fn new(real: f64, imag: f64) -> Self {
+        Complex { real, imag }
+    }
+
+    fn add(&mut self, other: &Self) -> &mut Self {
+        self.real += other.real;
+        self.imag += other.imag;
+        self
+    }
+
+    fn sq(&mut self) -> &mut Self {
+        let tmp_real = self.real;
+        self.real = self.real*self.real - self.imag*self.imag;
+        self.imag = 2.0 * tmp_real * self.imag;
+        self
+    }
+
+    fn mag_sq(&self) -> f64 {
+        self.real*self.real + self.imag*self.imag
+    }
+}
+
+fn calc_at(c: &Complex) -> Option<f64> {
+    let mut z = Complex::new(0.0, 0.0);
+    let mut itr = 0;
+    let max_itr = 100;
+    loop {
+        z.sq().add(c);
+        itr += 1;
+        if itr >= max_itr {
+            return None;
+        } else if z.mag_sq() > 4.0 {
+            return Some(f64::from(itr));
         }
-        print!("\n");
     }
 }
 
-fn calc(cr: f64, ci: f64) -> bool {
-    let c = (cr, ci);
-    let mut z = (0.0, 0.0);
-    for _n in 0..1_000 {
-        iter(&c, &mut z);
-        if z.0 * z.0 + z.1 * z.1 > 4.0 {
-            return false;
-        };
-    }
-    true
-}
-
-fn iter(c: &(f64, f64), z: &mut (f64, f64)) {
-    // z^2+c
-    *z = (z.0 * z.0 - z.1 * z.1 + c.0, 2.0 * z.0 * z.1 + c.1);
+fn main() {
+    let width  = 200;
+    let height = 200;
 }
