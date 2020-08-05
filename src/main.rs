@@ -72,7 +72,7 @@ fn main() {
         println!("{}/{}", y, height);
         for x in 0..width {
 
-            let mut sub_pix: Vec<Vec<f64>> = Vec::new();
+            let mut pix_sum: Vec<f64> = vec![0.0, 0.0, 0.0];
             for xaa in 0..aa {
                 for yaa in 0..aa {
                     let aa = aa as f64;
@@ -85,26 +85,15 @@ fn main() {
                     let c = Complex::new(x, y);
                     let escape = calc_at(&c);
 
-                    sub_pix.push(match escape {
-                        None => vec![0.0, 0.0, 0.0],
-                        Some(escape) => vec![
-                            (escape / 2.0 * 1.1).sin() / 2.0 + 0.5,
-                            (escape / 2.0 * 1.2).sin() / 2.0 + 0.5,
-                            (escape / 2.0 * 1.3).sin() / 2.0 + 0.5,
-                        ],
-                    });
+                    if let Some(escape) = escape {
+                        pix_sum[0] += (escape / 2.0 * 1.1).sin() / 2.0 + 0.5;
+                        pix_sum[1] += (escape / 2.0 * 1.2).sin() / 2.0 + 0.5;
+                        pix_sum[2] += (escape / 2.0 * 1.3).sin() / 2.0 + 0.5;
+                    }
                 }
             }
             data.push(
-                sub_pix
-                    .iter()
-                    .fold(vec![0.0, 0.0, 0.0], |acc, x| {
-                        vec![
-                          acc[0] + x[0],
-                          acc[1] + x[1],
-                          acc[2] + x[2],
-                        ]
-                    })
+                pix_sum
                     .iter()
                     .map(|x| { let aa = aa as f64; x / aa / aa })
                     .map(|x| x.powf(1.0/2.2))
