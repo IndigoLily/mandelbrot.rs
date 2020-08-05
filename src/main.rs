@@ -45,7 +45,7 @@ fn calc_at(c: &Complex) -> Option<f64> {
 
         if z.mag_sq() > bailout {
             let itr = itr as f64;
-            return Some(itr - (z.mag().log(E)/bailout.log(E)).log(2.0));
+            return Some(itr - (z.mag().log(E) / bailout.log(E)).log(2.0));
         }
 
         itr += 1;
@@ -71,7 +71,6 @@ fn main() {
     for y in 0..height {
         println!("{}/{}", y, height);
         for x in 0..width {
-
             let mut pix_sum: Vec<f64> = vec![0.0, 0.0, 0.0];
             for xaa in 0..aa {
                 for yaa in 0..aa {
@@ -79,7 +78,7 @@ fn main() {
                     let xaa = xaa as f64;
                     let yaa = yaa as f64;
 
-                    let x = (x as f64 + xaa / aa - width_f  / 2.0) / smaller_f * 4.0;
+                    let x = (x as f64 + xaa / aa - width_f / 2.0) / smaller_f * 4.0;
                     let y = (y as f64 + yaa / aa - height_f / 2.0) / smaller_f * 4.0;
 
                     let c = Complex::new(x, y);
@@ -95,22 +94,24 @@ fn main() {
             data.push(
                 pix_sum
                     .iter()
-                    .map(|x| { let aa = aa as f64; x / aa / aa })
-                    .map(|x| x.powf(1.0/2.2))
+                    .map(|x| {
+                        let aa = aa as f64;
+                        x / aa / aa
+                    })
+                    .map(|x| x.powf(1.0 / 2.2))
                     .map(|x| x * 255.0)
-                    .collect::<Vec<f64>>()
+                    .collect::<Vec<f64>>(),
             );
-
         }
     }
     let data: Vec<u8> = data.iter().flatten().map(|&x| x as u8).collect();
 
-    let file = File::create("mandelbrot.png").unwrap();
+    let file = File::create("mandelbrot.png").expect("Couldn't open file");
 
     let mut encoder = Encoder::new(file, width, height);
     encoder.set_color(ColorType::RGB);
     encoder.set_depth(BitDepth::Eight);
 
     let mut writer = encoder.write_header().unwrap();
-    writer.write_image_data(&data).unwrap();
+    writer.write_image_data(&data).expect("Couldn't write to file");
 }
