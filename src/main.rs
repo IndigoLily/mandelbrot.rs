@@ -5,6 +5,54 @@ use std::io::Write;
 use std::f64::consts::E;
 use std::f64::consts::TAU;
 
+fn main() {
+    let width  = 1920/2;
+    let height = 1080/2;
+    let aa     = 1;
+    let frames = 30;
+    let stg    = Settings::new(width, height, aa, frames);
+
+    for frame in 0..stg.frames {
+        let t = frame as f64 / stg.frames_f;
+        if frames > 1 {
+            print!("Calculating frame {}/{}\r", frame, stg.frames);
+            std::io::stdout().flush();
+        }
+
+        let mut data: Vec<u8> = Vec::with_capacity((stg.width * stg.height) as usize);
+        for y in 0..stg.height {
+            if frames == 1 {
+                print!("Calculating {}%\r", y * 100 / stg.height);
+                std::io::stdout().flush();
+            }
+            for x in 0..stg.width {
+                data.append(&mut get_pixel(x, y, t, &stg));
+            }
+        }
+
+        if frames == 1 {
+            println!("Calculating 100%");
+        }
+
+        let file = File::create(
+            if stg.frames == 1 { String::from("mandelbrot.png") }
+            else { format!("frames/{}.png", frame) })
+            .expect("Couldn't open file");
+
+        let mut encoder = Encoder::new(file, stg.width, stg.height);
+        encoder.set_color(ColorType::RGB);
+        encoder.set_depth(BitDepth::Eight);
+
+        let mut writer = encoder.write_header().unwrap();
+        writer.write_image_data(&data)
+            .expect("Couldn't write to file");
+    }
+
+    if frames > 1 {
+        println!("Calculating frame {0}/{0}", stg.frames);
+    }
+}
+
 struct Settings {
     width:     u32,
     height:    u32,
@@ -38,54 +86,32 @@ impl Settings {
     }
 }
 
-fn main() {
-    let width  = 1920/2;
-    let height = 1080/2;
-    let aa     = 2;
-    let frames = 30;
-    let stg    = Settings::new(width, height, aa, frames);
+fn get_colour(escape: &Option<f64>, t: f64) -> Vec<f64> {
+    if let Some(escape) = escape {
+        let val = if (((escape * 10.0).log(10.0) * 10.0 - t) % 1.0) > 0.9 {
+            1.0
+        } else {
+            0.0
+        };
+        vec![val, val, val]
 
-    for frame in 0..stg.frames {
-        let t = frame as f64 / stg.frames_f;
-        if frames > 1 {
-            print!("Calculating frame {}/{}\r", frame, stg.frames);
-            std::io::stdout().flush();
-        }
+        /*
+        vec![
+            (escape / 2.0 * 1.1 + t * TAU).sin() / 2.0 + 0.5,
+            (escape / 2.0 * 1.2 + t * TAU).sin() / 2.0 + 0.5,
+            (escape / 2.0 * 1.3 + t * TAU).sin() / 2.0 + 0.5,
+        ]
+        */
 
-        let mut data: Vec<u8> = Vec::with_capacity((stg.width * stg.height) as usize);
-        for y in 0..stg.height {
-            if frames == 1 {
-                print!("Calculating {}%\r", y * 100 / stg.height);
-                std::io::stdout().flush();
-            }
-            for x in 0..stg.width {
-                data.append(&mut get_pixel(x, y, t, &stg));
-            }
-        }
-
-        if frames == 1 {
-            println!("Calculating 100%");
-        }
-
-        let file = File::create(
-            if stg.frames == 1 {
-                String::from("mandelbrot.png")
-            } else {
-                format!("frames/{}.png", frame)
-            })
-            .expect("Couldn't open file");
-
-        let mut encoder = Encoder::new(file, stg.width, stg.height);
-        encoder.set_color(ColorType::RGB);
-        encoder.set_depth(BitDepth::Eight);
-
-        let mut writer = encoder.write_header().unwrap();
-        writer.write_image_data(&data)
-            .expect("Couldn't write to file");
-    }
-
-    if frames > 1 {
-        println!("Calculating frame {0}/{0}", stg.frames);
+        /*
+        vec![
+            (escape / 2.0 + TAU*1.0/2.0 + t * TAU).sin() / 2.0 + 0.5,
+            (escape / 2.0 + TAU*1.0/3.0 + t * TAU).sin() / 2.0 + 0.5,
+            (escape / 2.0 + TAU*1.0/4.0 + t * TAU).sin() / 2.0 + 0.5,
+        ]
+        */
+    } else {
+        vec![0.0, 0.0, 0.0]
     }
 }
 
@@ -108,25 +134,6 @@ fn get_pixel(x: u32, y: u32, t: f64, stg: &Settings) -> Vec<u8> {
         }
     }
     sum.iter().map(|x| ((x / stg.aa_f / stg.aa_f).powf(1.0/2.2) * 255.0) as u8).collect()
-}
-
-fn get_colour(escape: &Option<f64>, t: f64) -> Vec<f64> {
-    if let Some(escape) = escape {
-        /*
-        vec![
-            (escape / 2.0 * 1.1 + t * TAU).sin() / 2.0 + 0.5,
-            (escape / 2.0 * 1.2 + t * TAU).sin() / 2.0 + 0.5,
-            (escape / 2.0 * 1.3 + t * TAU).sin() / 2.0 + 0.5,
-        ]
-        */
-        vec![
-            (escape / 2.0 + TAU*1.0/2.0 + t * TAU).sin() / 2.0 + 0.5,
-            (escape / 2.0 + TAU*1.0/3.0 + t * TAU).sin() / 2.0 + 0.5,
-            (escape / 2.0 + TAU*1.0/4.0 + t * TAU).sin() / 2.0 + 0.5,
-        ]
-    } else {
-        vec![0.0, 0.0, 0.0]
-    }
 }
 
 // take a point in image coordinates, and return its location in the complex plane
