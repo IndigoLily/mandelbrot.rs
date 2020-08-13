@@ -1,72 +1,123 @@
 use png::{BitDepth, ColorType, Encoder};
-use std::fs::File;
-use std::io::Write;
-use std::sync::mpsc;
-use std::sync::Arc;
+use std::{
+    env,
+    fmt::Debug,
+    fs::{self, File},
+    io::Write,
+    str::FromStr,
+    sync::{mpsc, Arc},
+};
 
 use std::f64::consts::E;
 use std::f64::consts::TAU;
 
 type Pixel = Vec<u8>;
 
+fn parse_var<T>(name: &str, default: T) -> T
+where
+    T: std::str::FromStr,
+    <T as std::str::FromStr>::Err: Debug,
+{
+    match env::var(name) {
+        Ok(val) => val
+            .parse()
+            .expect(&format!("Couldn't parse {} setting", name)),
+        Err(_) => default,
+    }
+}
+
 fn main() {
-    let width  = 1920;
-    let height = 1080;
-    let aa     = 10;
-    let frames = 1;
-    let stg    = Arc::new(Settings::new(width, height, aa, frames));
+    let stg = {
+        let width  = parse_var("width", 640);
+        let height = parse_var("height", 640);
+        let aa     = parse_var("aa", 1);
+        let frames = parse_var("frames", 1);
+
+        assert!(width  >= 1, "Width must be at least 1");
+        assert!(height >= 1, "Height must be at least 1");
+        assert!(aa     >= 1, "Anti-aliasing level must be at least 1");
+        assert!(frames >= 1, "Frames must be at least 1");
+
+        Arc::new(Settings::new(width, height, aa, frames))
+    };
+
+    if stg.frames > 1 {
+        fs::remove_dir_all("frames").unwrap();
+        fs::create_dir("frames").unwrap();
+    }
+
+    let pool = threadpool::ThreadPool::new(5);
 
     for frame in 0..stg.frames {
         let t = frame as f64 / stg.frames_f;
 
-        let pool = threadpool::ThreadPool::new(12);
         let (tx, rx) = mpsc::channel();
 
-        let mut data: Vec<Pixel> = Vec::new();
+        let mut data: Vec<Vec<Pixel>> = Vec::new();
         data.resize((stg.width * stg.height) as usize, Vec::new());
+
         for y in 0..stg.height {
-            for x in 0..stg.width {
-                let tx  = tx.clone();
-                let stg = Arc::clone(&stg);
-                pool.execute(move|| {
-                    let val = (x, y, get_pixel(x, y, t, &stg));
-                    tx.send(val).unwrap();
-                });
-            }
+            let tx = tx.clone();
+            let stg = Arc::clone(&stg);
+
+            pool.execute(move || {
+                let mut row: Vec<Pixel> = Vec::with_capacity(stg.width as usize);
+                for x in 0..stg.width {
+                    row.push(get_pixel(x, y, t, &stg));
+                }
+                let val = (y, row);
+                tx.send(val).unwrap();
+            });
         }
 
         // need to drop original tx, or rx iterator will never end
         drop(tx);
 
-        let area = stg.width * stg.height;
         let mut count = 0;
         for msg in rx {
-            let (x, y, pix) = msg;
-            data[(x + y*stg.width) as usize] = pix;
+            let (y, pix) = msg;
+            data[y as usize] = pix;
             count += 1;
-            print!("\r{}%", count * 100 / area);
-            std::io::stdout().flush().unwrap();
+            if stg.frames == 1 {
+                print!("\r{}%", count * 100 / stg.height);
+                std::io::stdout().flush().unwrap();
+            }
         }
-        println!();
 
-        let data: Vec<u8> = data.into_iter().flatten().collect();
+        let data: Vec<u8> = data
+            .into_iter()
+            .flatten()
+            .collect::<Vec<Pixel>>()
+            .into_iter()
+            .flatten()
+            .collect();
 
-        let file = File::create(
-            if stg.frames == 1 { String::from("mandelbrot.png") }
-            else { format!("frames/{}.png", frame) }
-            )
-            .expect("Couldn't open file");
+        let file = File::create(if stg.frames == 1 {
+            String::from("mandelbrot.png")
+        } else {
+            format!("frames/{}.png", frame)
+        })
+        .expect("Couldn't open file");
 
         let mut encoder = Encoder::new(file, stg.width, stg.height);
         encoder.set_color(ColorType::RGB);
         encoder.set_depth(BitDepth::Eight);
 
         let mut writer = encoder.write_header().unwrap();
-        writer.write_image_data(&data)
+        writer
+            .write_image_data(&data)
             .expect("Couldn't write to file");
+
+        if stg.frames > 1 {
+            print!("\r{}/{} frames", frame + 1, stg.frames);
+            std::io::stdout().flush().unwrap();
+        }
     }
+
+    println!("\nDone");
 }
 
+#[allow(dead_code)]
 struct Settings {
     width:     u32,
     height:    u32,
@@ -103,7 +154,12 @@ impl Settings {
 fn get_colour(escape: &Option<f64>, t: f64) -> Vec<f64> {
     if let Some(escape) = escape {
         /*
-        let val = if (((escape * 10.0).log(10.0) * 10.0 - t) % 1.0) > 0.9 {
+        let val = ((escape * 2.0 + t * TAU).sin() / 2.0 + 0.5).powf(2.2);
+        vec![val, val, val]
+        */
+
+        /*
+        let val = if (((escape * 10.0).log(10.0) * 10.0 - t) % 1.0) > 0.95 {
             1.0
         } else {
             0.0
@@ -120,9 +176,9 @@ fn get_colour(escape: &Option<f64>, t: f64) -> Vec<f64> {
         */
 
         vec![
-            (escape / 2.0 + TAU*1.0/2.0 + t * TAU).sin() / 2.0 + 0.5,
-            (escape / 2.0 + TAU*1.0/3.0 + t * TAU).sin() / 2.0 + 0.5,
-            (escape / 2.0 + TAU*1.0/4.0 + t * TAU).sin() / 2.0 + 0.5,
+            (escape * 2.0 + TAU*1.0/2.0 + t * TAU).sin() / 2.0 + 0.5,
+            (escape * 2.0 + TAU*1.0/3.0 + t * TAU).sin() / 2.0 + 0.5,
+            (escape * 2.0 + TAU*1.0/4.0 + t * TAU).sin() / 2.0 + 0.5,
         ]
     } else {
         vec![0.0, 0.0, 0.0]
@@ -147,7 +203,9 @@ fn get_pixel(x: u32, y: u32, t: f64, stg: &Settings) -> Vec<u8> {
             sum[2] += colour[2];
         }
     }
-    sum.iter().map(|x| ((x / stg.aa_f / stg.aa_f).powf(1.0/2.2) * 255.0) as u8).collect()
+    sum.iter()
+        .map(|x| ((x / stg.aa_f / stg.aa_f).powf(1.0 / 2.2) * 255.0) as u8)
+        .collect()
 }
 
 // take a point in image coordinates, and return its location in the complex plane
