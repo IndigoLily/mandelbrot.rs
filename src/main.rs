@@ -19,14 +19,19 @@ struct Settings {
     width:     u32,
     height:    u32,
     smaller:   u32,
-    aa:        u32,
     frames:    u32,
+
+    aa:        u32,
+    max_itr:   u32,
 
     width_f:   f64,
     height_f:  f64,
     smaller_f: f64,
-    aa_f:      f64,
     frames_f:  f64,
+
+    aa_f:      f64,
+    bail:   f64,
+    bail_sq:   f64,
 
     zoom:      f64,
     center:    Complex<f64>,
@@ -38,20 +43,29 @@ struct Settings {
 }
 
 impl Settings {
-    fn new(width: u32, height: u32, aa: u32, frames: u32, zoom: f64, center_x: f64, center_y: f64, speed: f64, acc: f64, colour_algo: ColourAlgo) -> Self {
+    fn new(width: u32, height: u32, frames: u32,
+        aa: u32, bail: f64, max_itr: u32,
+        center_x: f64, center_y: f64, zoom: f64,
+        speed: f64, acc: f64, colour_algo: ColourAlgo) -> Self
+    {
         let smaller = if width < height { width } else { height };
         Settings {
             width,
             height,
-            aa,
             smaller,
             frames,
 
+            aa,
+            max_itr,
+
             width_f:   width   as f64,
             height_f:  height  as f64,
-            aa_f:      aa      as f64,
             smaller_f: smaller as f64,
             frames_f:  frames  as f64,
+
+            aa_f:    aa as f64,
+            bail:    bail,
+            bail_sq: bail * bail,
 
             zoom,
             center: Complex::new(center_x, center_y),
@@ -80,8 +94,11 @@ fn main() {
     let stg = {
         let width    = env_or_default("width", 640);
         let height   = env_or_default("height", 640);
-        let aa       = env_or_default("aa", 1);
         let frames   = env_or_default("frames", 1);
+
+        let aa       = env_or_default("aa", 1);
+        let bail     = env_or_default("bail", 20.0);
+        let max_itr  = env_or_default("itr", 100);
 
         let zoom     = env_or_default("zoom", 1.0);
         let center_x = env_or_default("center_x", 0.0);
@@ -110,11 +127,12 @@ fn main() {
 
         assert!(width  >= 1, "Width must be at least 1");
         assert!(height >= 1, "Height must be at least 1");
-        assert!(aa     >= 1, "Anti-aliasing level must be at least 1");
         assert!(frames >= 1, "Frames must be at least 1");
+        assert!(aa     >= 1, "Anti-aliasing level must be at least 1");
+        assert!(bail   >= 20.0, "Bailout must be at least 20");
         assert!(0.0 <= band_size && band_size <= 1.0, "Band size must be between 0 and 1");
 
-        Arc::new(Settings::new(width, height, aa, frames, zoom, center_x, center_y, speed, acc, colour_algo))
+        Arc::new(Settings::new(width, height, frames, aa, bail, max_itr, center_x, center_y, zoom, speed, acc, colour_algo))
     };
 
     if stg.frames > 1 {
@@ -205,7 +223,7 @@ enum ColourAlgo {
 
 fn get_colour(escape: &Option<f64>, t: f64, stg: &Settings) -> Vec<f64> {
     if let Some(escape) = escape {
-        let escape = (escape * stg.speed).powf(stg.acc);
+        let escape = escape.powf(stg.acc) * stg.speed;
         match stg.colour_algo {
             ColourAlgo::BW => vec![1.0, 1.0, 1.0],
 
@@ -266,7 +284,7 @@ fn get_pixel(x: u32, y: u32, t: f64, stg: &Settings) -> Vec<u8> {
             let ny = y + yaa / stg.aa_f;
 
             let c = image_to_complex(nx, ny, stg);
-            let esc = calc_at(&c);
+            let esc = calc_at(&c, stg);
             let colour = get_colour(&esc, t, stg);
 
             sum[0] += colour[0];
@@ -284,55 +302,23 @@ fn image_to_complex(x: f64, y: f64, stg: &Settings) -> Complex<f64> {
     (Complex::new(x, y) - Complex::new(stg.width_f, stg.height_f) / 2.0) / stg.smaller_f * 4.0 / stg.zoom + stg.center
 }
 
-//struct Complex {
-//    real: f64,
-//    imag: f64,
-//}
-//
-//impl Complex {
-//    fn new(real: f64, imag: f64) -> Self {
-//        Complex { real, imag }
-//    }
-//
-//    fn add(&mut self, other: &Self) -> &mut Self {
-//        self.real += other.real;
-//        self.imag += other.imag;
-//        self
-//    }
-//
-//    fn sq(&mut self) -> &mut Self {
-//        let tmp_real = self.real;
-//        self.real = self.real * self.real - self.imag * self.imag;
-//        self.imag = 2.0 * tmp_real * self.imag;
-//        self
-//    }
-//
-//    fn mag_sq(&self) -> f64 {
-//        self.real * self.real + self.imag * self.imag
-//    }
-//
-//    fn mag(&self) -> f64 {
-//        self.mag_sq().sqrt()
-//    }
-//}
-
-fn calc_at(c: &Complex<f64>) -> Option<f64> {
-    let mut z = Complex::new(0.0, 0.0);
-    let mut itr = 0;
-    let max_itr = 1000;
-    let bailout = 400.0;
+// calculate the escape time at a point c in the complex plane
+// if c is in the Mandelbrot set, returns None
+fn calc_at(c: &Complex<f64>, stg: &Settings) -> Option<f64> {
+    let mut z = c.clone();
+    let mut itr = 1;
     loop {
         //z.sq().add(c);
         z = z * z + c;
 
-        if z.norm() > bailout {
+        if z.norm_sqr() > stg.bail_sq {
             let itr = itr as f64;
-            return Some(itr - (z.norm().log(E) / bailout.log(E)).log(2.0));
+            return Some(itr - (z.norm().log(E) / stg.bail.log(E)).log(2.0));
         }
 
         itr += 1;
 
-        if itr >= max_itr {
+        if itr >= stg.max_itr {
             return None;
         }
     }
