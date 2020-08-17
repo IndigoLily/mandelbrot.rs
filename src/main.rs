@@ -1,4 +1,5 @@
 use png::{BitDepth, ColorType, Encoder};
+use num::Complex;
 use std::{
     env,
     fmt::Debug,
@@ -13,7 +14,56 @@ use std::f64::consts::TAU;
 
 type Pixel = Vec<u8>;
 
-fn parse_var<T>(name: &str, default: T) -> T
+#[allow(dead_code)]
+struct Settings {
+    width:     u32,
+    height:    u32,
+    smaller:   u32,
+    aa:        u32,
+    frames:    u32,
+
+    width_f:   f64,
+    height_f:  f64,
+    smaller_f: f64,
+    aa_f:      f64,
+    frames_f:  f64,
+
+    zoom:      f64,
+    center:    Complex<f64>,
+
+    speed:     f64,
+    acc:       f64,
+
+    colour_algo: ColourAlgo,
+}
+
+impl Settings {
+    fn new(width: u32, height: u32, aa: u32, frames: u32, zoom: f64, center_x: f64, center_y: f64, speed: f64, acc: f64, colour_algo: ColourAlgo) -> Self {
+        let smaller = if width < height { width } else { height };
+        Settings {
+            width,
+            height,
+            aa,
+            smaller,
+            frames,
+
+            width_f:   width   as f64,
+            height_f:  height  as f64,
+            aa_f:      aa      as f64,
+            smaller_f: smaller as f64,
+            frames_f:  frames  as f64,
+
+            zoom,
+            center: Complex::new(center_x, center_y),
+
+            speed,
+            acc,
+            colour_algo,
+        }
+    }
+}
+
+fn env_or_default<T>(name: &str, default: T) -> T
 where
     T: std::str::FromStr,
     <T as std::str::FromStr>::Err: Debug,
@@ -28,17 +78,43 @@ where
 
 fn main() {
     let stg = {
-        let width  = parse_var("width", 640);
-        let height = parse_var("height", 640);
-        let aa     = parse_var("aa", 1);
-        let frames = parse_var("frames", 1);
+        let width    = env_or_default("width", 640);
+        let height   = env_or_default("height", 640);
+        let aa       = env_or_default("aa", 1);
+        let frames   = env_or_default("frames", 1);
+
+        let zoom     = env_or_default("zoom", 1.0);
+        let center_x = env_or_default("center_x", 0.0);
+        let center_y = env_or_default("center_y", 0.0);
+
+        let speed    = env_or_default("speed", 1.0);
+        let acc      = env_or_default("acc", 1.0);
+
+        let sin_r     = env_or_default("sin_r", 1.0);
+        let sin_g     = env_or_default("sin_g", 1.0);
+        let sin_b     = env_or_default("sin_b", 1.0);
+        let band_size = env_or_default("band_size", 0.5);
+
+        let colour_algo = match env::var("colour_algo") {
+            Ok(val) => match val.to_lowercase().as_str() {
+                "bw"        => ColourAlgo::BW,
+                "grey"      => ColourAlgo::Grey,
+                "rgb"       => ColourAlgo::RGB,
+                "bands"     => ColourAlgo::Bands(band_size),
+                "sin_mult" => ColourAlgo::SineMult(sin_r, sin_g, sin_b),
+                "sin_add"  => ColourAlgo::SineAdd(sin_r, sin_g, sin_b),
+                _ => panic!("Couldn't parse colour_algo setting"),
+            },
+            Err(_) => ColourAlgo::SineAdd(1.1, 1.2, 1.3),
+        };
 
         assert!(width  >= 1, "Width must be at least 1");
         assert!(height >= 1, "Height must be at least 1");
         assert!(aa     >= 1, "Anti-aliasing level must be at least 1");
         assert!(frames >= 1, "Frames must be at least 1");
+        assert!(0.0 <= band_size && band_size <= 1.0, "Band size must be between 0 and 1");
 
-        Arc::new(Settings::new(width, height, aa, frames))
+        Arc::new(Settings::new(width, height, aa, frames, zoom, center_x, center_y, speed, acc, colour_algo))
     };
 
     if stg.frames > 1 {
@@ -46,15 +122,16 @@ fn main() {
         fs::create_dir("frames").unwrap();
     }
 
-    let pool = threadpool::ThreadPool::new(5);
+    let pool = threadpool::ThreadPool::new(env_or_default("threads", 1));
 
     for frame in 0..stg.frames {
+        // t is in the range [0, 1)
         let t = frame as f64 / stg.frames_f;
 
         let (tx, rx) = mpsc::channel();
 
         let mut data: Vec<Vec<Pixel>> = Vec::new();
-        data.resize((stg.width * stg.height) as usize, Vec::new());
+        data.resize(stg.height as usize, Vec::new());
 
         for y in 0..stg.height {
             let tx = tx.clone();
@@ -117,69 +194,63 @@ fn main() {
     println!("\nDone");
 }
 
-#[allow(dead_code)]
-struct Settings {
-    width:     u32,
-    height:    u32,
-    smaller:   u32,
-    aa:        u32,
-    frames:    u32,
-
-    width_f:   f64,
-    height_f:  f64,
-    smaller_f: f64,
-    aa_f:      f64,
-    frames_f:  f64,
+enum ColourAlgo {
+    BW,
+    Grey,
+    Bands(f64),
+    RGB,
+    SineMult(f64, f64, f64),
+    SineAdd(f64, f64, f64),
 }
 
-impl Settings {
-    fn new(width: u32, height: u32, aa: u32, frames: u32) -> Self {
-        let smaller = if width < height { width } else { height };
-        Settings {
-            width,
-            height,
-            aa,
-            smaller,
-            frames,
-
-            width_f:   width   as f64,
-            height_f:  height  as f64,
-            aa_f:      aa      as f64,
-            smaller_f: smaller as f64,
-            frames_f:  frames  as f64,
-        }
-    }
-}
-
-fn get_colour(escape: &Option<f64>, t: f64) -> Vec<f64> {
+fn get_colour(escape: &Option<f64>, t: f64, stg: &Settings) -> Vec<f64> {
     if let Some(escape) = escape {
-        /*
-        let val = ((escape * 2.0 + t * TAU).sin() / 2.0 + 0.5).powf(2.2);
-        vec![val, val, val]
-        */
+        let escape = (escape * stg.speed).powf(stg.acc);
+        match stg.colour_algo {
+            ColourAlgo::BW => vec![1.0, 1.0, 1.0],
 
-        /*
-        let val = if (((escape * 10.0).log(10.0) * 10.0 - t) % 1.0) > 0.95 {
-            1.0
-        } else {
-            0.0
-        };
-        vec![val, val, val]
-        */
+            ColourAlgo::Grey => {
+                let val = ((escape * 2.0 + t * TAU).sin() / 2.0 + 0.5).powf(2.2);
+                vec![val, val, val]
+            },
 
-        /*
-        vec![
-            (escape / 2.0 * 1.1 + t * TAU).sin() / 2.0 + 0.5,
-            (escape / 2.0 * 1.2 + t * TAU).sin() / 2.0 + 0.5,
-            (escape / 2.0 * 1.3 + t * TAU).sin() / 2.0 + 0.5,
-        ]
-        */
+            ColourAlgo::Bands(size) => {
+               let val = if (((escape * 10.0).log(10.0) * 10.0 - t) % 1.0) < size {
+               //let val = if (escape - t) % 1.0 < size {
+                   1.0
+               } else {
+                   0.0
+               };
+               vec![val, val, val]
+            },
 
-        vec![
-            (escape * 2.0 + TAU*1.0/2.0 + t * TAU).sin() / 2.0 + 0.5,
-            (escape * 2.0 + TAU*1.0/3.0 + t * TAU).sin() / 2.0 + 0.5,
-            (escape * 2.0 + TAU*1.0/4.0 + t * TAU).sin() / 2.0 + 0.5,
-        ]
+            ColourAlgo::RGB => {
+               let val = (escape + t) % 1.0;
+               if val < 1.0/3.0 {
+                   vec![1.0, 0.0, 0.0]
+               } else if val < 2.0/3.0 {
+                   vec![0.0, 1.0, 0.0]
+               } else {
+                   vec![0.0, 0.0, 1.0]
+               }
+            },
+
+            ColourAlgo::SineMult(r, g, b) => {
+                vec![
+                    (escape / 2.0 * r + t * TAU).sin() / 2.0 + 0.5,
+                    (escape / 2.0 * g + t * TAU).sin() / 2.0 + 0.5,
+                    (escape / 2.0 * b + t * TAU).sin() / 2.0 + 0.5,
+                ]
+            },
+
+            ColourAlgo::SineAdd(r, g, b) => {
+                vec![
+                    (escape * 2.0 + TAU * r + t * TAU).sin() / 2.0 + 0.5,
+                    (escape * 2.0 + TAU * g + t * TAU).sin() / 2.0 + 0.5,
+                    (escape * 2.0 + TAU * b + t * TAU).sin() / 2.0 + 0.5,
+                ]
+            },
+        }
     } else {
         vec![0.0, 0.0, 0.0]
     }
@@ -196,7 +267,7 @@ fn get_pixel(x: u32, y: u32, t: f64, stg: &Settings) -> Vec<u8> {
 
             let c = image_to_complex(nx, ny, stg);
             let esc = calc_at(&c);
-            let colour = get_colour(&esc, t);
+            let colour = get_colour(&esc, t, stg);
 
             sum[0] += colour[0];
             sum[1] += colour[1];
@@ -209,55 +280,54 @@ fn get_pixel(x: u32, y: u32, t: f64, stg: &Settings) -> Vec<u8> {
 }
 
 // take a point in image coordinates, and return its location in the complex plane
-fn image_to_complex(x: f64, y: f64, stg: &Settings) -> Complex {
-    let x = (x - stg.width_f  / 2.0) / stg.smaller_f * 4.0;
-    let y = (y - stg.height_f / 2.0) / stg.smaller_f * 4.0;
-    Complex::new(x, y)
+fn image_to_complex(x: f64, y: f64, stg: &Settings) -> Complex<f64> {
+    (Complex::new(x, y) - Complex::new(stg.width_f, stg.height_f) / 2.0) / stg.smaller_f * 4.0 / stg.zoom + stg.center
 }
 
-struct Complex {
-    real: f64,
-    imag: f64,
-}
+//struct Complex {
+//    real: f64,
+//    imag: f64,
+//}
+//
+//impl Complex {
+//    fn new(real: f64, imag: f64) -> Self {
+//        Complex { real, imag }
+//    }
+//
+//    fn add(&mut self, other: &Self) -> &mut Self {
+//        self.real += other.real;
+//        self.imag += other.imag;
+//        self
+//    }
+//
+//    fn sq(&mut self) -> &mut Self {
+//        let tmp_real = self.real;
+//        self.real = self.real * self.real - self.imag * self.imag;
+//        self.imag = 2.0 * tmp_real * self.imag;
+//        self
+//    }
+//
+//    fn mag_sq(&self) -> f64 {
+//        self.real * self.real + self.imag * self.imag
+//    }
+//
+//    fn mag(&self) -> f64 {
+//        self.mag_sq().sqrt()
+//    }
+//}
 
-impl Complex {
-    fn new(real: f64, imag: f64) -> Self {
-        Complex { real, imag }
-    }
-
-    fn add(&mut self, other: &Self) -> &mut Self {
-        self.real += other.real;
-        self.imag += other.imag;
-        self
-    }
-
-    fn sq(&mut self) -> &mut Self {
-        let tmp_real = self.real;
-        self.real = self.real * self.real - self.imag * self.imag;
-        self.imag = 2.0 * tmp_real * self.imag;
-        self
-    }
-
-    fn mag_sq(&self) -> f64 {
-        self.real * self.real + self.imag * self.imag
-    }
-
-    fn mag(&self) -> f64 {
-        self.mag_sq().sqrt()
-    }
-}
-
-fn calc_at(c: &Complex) -> Option<f64> {
+fn calc_at(c: &Complex<f64>) -> Option<f64> {
     let mut z = Complex::new(0.0, 0.0);
     let mut itr = 0;
     let max_itr = 1000;
     let bailout = 400.0;
     loop {
-        z.sq().add(c);
+        //z.sq().add(c);
+        z = z * z + c;
 
-        if z.mag_sq() > bailout {
+        if z.norm() > bailout {
             let itr = itr as f64;
-            return Some(itr - (z.mag().log(E) / bailout.log(E)).log(2.0));
+            return Some(itr - (z.norm().log(E) / bailout.log(E)).log(2.0));
         }
 
         itr += 1;
