@@ -5,7 +5,6 @@ use std::{
     fmt::Debug,
     fs::{self, File},
     io::Write,
-    str::FromStr,
     sync::{mpsc, Arc},
 };
 
@@ -30,7 +29,7 @@ struct Settings {
     frames_f:  f64,
 
     aa_f:      f64,
-    bail:   f64,
+    bail:      f64,
     bail_sq:   f64,
 
     zoom:      f64,
@@ -43,20 +42,17 @@ struct Settings {
 }
 
 impl Settings {
-    fn new(width: u32, height: u32, frames: u32,
+    fn new(
+        width: u32, height: u32, frames: u32,
         aa: u32, bail: f64, max_itr: u32,
         center_x: f64, center_y: f64, zoom: f64,
         speed: f64, acc: f64, colour_algo: ColourAlgo) -> Self
     {
         let smaller = if width < height { width } else { height };
         Settings {
-            width,
-            height,
-            smaller,
-            frames,
+            width, height, smaller, frames,
 
-            aa,
-            max_itr,
+            aa, max_itr,
 
             width_f:   width   as f64,
             height_f:  height  as f64,
@@ -70,9 +66,7 @@ impl Settings {
             zoom,
             center: Complex::new(center_x, center_y),
 
-            speed,
-            acc,
-            colour_algo,
+            speed, acc, colour_algo,
         }
     }
 }
@@ -118,8 +112,8 @@ fn main() {
                 "grey"      => ColourAlgo::Grey,
                 "rgb"       => ColourAlgo::RGB,
                 "bands"     => ColourAlgo::Bands(band_size),
-                "sin_mult" => ColourAlgo::SineMult(sin_r, sin_g, sin_b),
-                "sin_add"  => ColourAlgo::SineAdd(sin_r, sin_g, sin_b),
+                "sin_mult"  => ColourAlgo::SineMult(sin_r, sin_g, sin_b),
+                "sin_add"   => ColourAlgo::SineAdd(sin_r, sin_g, sin_b),
                 _ => panic!("Couldn't parse colour_algo setting"),
             },
             Err(_) => ColourAlgo::SineAdd(1.1, 1.2, 1.3),
@@ -132,7 +126,14 @@ fn main() {
         assert!(bail   >= 20.0, "Bailout must be at least 20");
         assert!(0.0 <= band_size && band_size <= 1.0, "Band size must be between 0 and 1");
 
-        Arc::new(Settings::new(width, height, frames, aa, bail, max_itr, center_x, center_y, zoom, speed, acc, colour_algo))
+        Arc::new(
+            Settings::new(
+                width, height, frames,
+                aa, bail, max_itr,
+                center_x, center_y, zoom,
+                speed, acc, colour_algo
+            )
+        )
     };
 
     if stg.frames > 1 {
@@ -233,8 +234,7 @@ fn get_colour(escape: &Option<f64>, t: f64, stg: &Settings) -> Vec<f64> {
             },
 
             ColourAlgo::Bands(size) => {
-               let val = if (((escape * 10.0).log(10.0) * 10.0 - t) % 1.0) < size {
-               //let val = if (escape - t) % 1.0 < size {
+               let val = if (escape - t) % 1.0 < size {
                    1.0
                } else {
                    0.0
@@ -308,7 +308,6 @@ fn calc_at(c: &Complex<f64>, stg: &Settings) -> Option<f64> {
     let mut z = c.clone();
     let mut itr = 1;
     loop {
-        //z.sq().add(c);
         z = z * z + c;
 
         if z.norm_sqr() > stg.bail_sq {
