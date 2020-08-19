@@ -143,10 +143,13 @@ fn main() {
 
     let pool = threadpool::ThreadPool::new(env_or_default("threads", 1));
 
+    let escapes: Vec<Vec<Option<f64>>> = calc_escapes(&stg, &pool);
+
     for frame in 0..stg.frames {
         // t is in the range [0, 1)
         let t = frame as f64 / stg.frames_f;
 
+        /*
         let (tx, rx) = mpsc::channel();
 
         let mut data: Vec<Vec<Pixel>> = Vec::new();
@@ -187,6 +190,9 @@ fn main() {
             .into_iter()
             .flatten()
             .collect();
+        */
+
+        let image_data: Vec<u8> = colourize(&escapes, &stg, &pool);
 
         let file = File::create(if stg.frames == 1 {
             String::from("mandelbrot.png")
@@ -201,7 +207,7 @@ fn main() {
 
         let mut writer = encoder.write_header().unwrap();
         writer
-            .write_image_data(&data)
+            .write_image_data(&image_data)
             .expect("Couldn't write to file");
 
         if stg.frames > 1 {
