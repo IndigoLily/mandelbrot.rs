@@ -1,5 +1,3 @@
-use png::{BitDepth, ColorType, Encoder};
-use num::Complex;
 use std::{
     env,
     fmt::Debug,
@@ -7,6 +5,10 @@ use std::{
     io::Write,
     sync::{mpsc, Arc},
 };
+
+use png::{BitDepth, ColorType, Encoder};
+use num::Complex;
+use threadpool::ThreadPool;
 
 use std::f64::consts::E;
 use std::f64::consts::TAU;
@@ -143,56 +145,13 @@ fn main() {
 
     let pool = threadpool::ThreadPool::new(env_or_default("threads", 1));
 
-    let escapes: Vec<Vec<Option<f64>>> = calc_escapes(&stg, &pool);
+    let escapes: Arc<Vec<Vec<Option<f64>>>> = Arc::new(calc_escapes(&stg, &pool));
 
     for frame in 0..stg.frames {
         // t is in the range [0, 1)
         let t = frame as f64 / stg.frames_f;
 
-        /*
-        let (tx, rx) = mpsc::channel();
-
-        let mut data: Vec<Vec<Pixel>> = Vec::new();
-        data.resize(stg.height as usize, Vec::new());
-
-        for y in 0..stg.height {
-            let tx = tx.clone();
-            let stg = Arc::clone(&stg);
-
-            pool.execute(move || {
-                let mut row: Vec<Pixel> = Vec::with_capacity(stg.width as usize);
-                for x in 0..stg.width {
-                    row.push(get_pixel(x, y, t, &stg));
-                }
-                let val = (y, row);
-                tx.send(val).unwrap();
-            });
-        }
-
-        // need to drop original tx, or rx iterator will never end
-        drop(tx);
-
-        let mut count = 0;
-        for msg in rx {
-            let (y, pix) = msg;
-            data[y as usize] = pix;
-            count += 1;
-            if stg.frames == 1 {
-                print!("\r{}%", count * 100 / stg.height);
-                std::io::stdout().flush().unwrap();
-            }
-        }
-
-        let data: Vec<u8> = data
-            .into_iter()
-            .flatten()
-            .collect::<Vec<Pixel>>()
-            .into_iter()
-            .flatten()
-            .collect();
-        */
-
-        let image_data: Vec<u8> = colourize(&escapes, &stg, &pool);
+        let image_data: Vec<u8> = colourize(&escapes, t, &stg, &pool);
 
         let file = File::create(if stg.frames == 1 {
             String::from("mandelbrot.png")
@@ -327,4 +286,102 @@ fn calc_at(c: &Complex<f64>, stg: &Settings) -> Option<f64> {
             return None;
         }
     }
+}
+
+fn calc_escapes(stg: &Arc<Settings>, pool: &ThreadPool) -> Vec<Vec<Option<f64>>> {
+    let (tx, rx) = mpsc::channel();
+
+    let mut escapes: Vec<Vec<Option<f64>>> = Vec::new();
+    escapes.resize((stg.height * stg.aa) as usize, Vec::new());
+
+    for y in 0 .. stg.height * stg.aa {
+        let tx = tx.clone();
+        let stg = Arc::clone(stg);
+
+        pool.execute(move || {
+            let mut row: Vec<Option<f64>> = Vec::with_capacity((stg.width * stg.aa) as usize);
+            for x in 0 .. stg.width * stg.aa {
+                let c = image_to_complex(x as f64 / stg.aa_f, y as f64 / stg.aa_f, &stg);
+                row.push(calc_at(&c, &stg));
+            }
+            let val = (y, row);
+            tx.send(val).unwrap();
+        });
+    }
+
+    // need to drop original tx, or rx iterator will never end
+    drop(tx);
+
+    let mut count = 0;
+    for msg in rx {
+        let (y, row) = msg;
+        escapes[y as usize] = row;
+        count += 1;
+
+        print!("\r{}% calculated", count * 100 / stg.height / stg.aa);
+        std::io::stdout().flush().unwrap();
+    }
+
+    println!();
+
+    escapes
+}
+
+fn colourize(escapes: &Arc<Vec<Vec<Option<f64>>>>, t: f64, stg: &Arc<Settings>, pool: &ThreadPool) -> Vec<u8> {
+    let (tx, rx) = mpsc::channel();
+
+    let mut data: Vec<Vec<Pixel>> = Vec::new();
+    data.resize(stg.height as usize, Vec::new());
+
+    for y in 0..stg.height {
+        let tx = tx.clone();
+        let stg = Arc::clone(&stg);
+        let escapes = Arc::clone(&escapes);
+
+        pool.execute(move || {
+            let mut pix_row: Vec<Pixel> = Vec::with_capacity(stg.width as usize);
+            for x in 0..stg.width {
+                let mut sum: Vec<f64> = vec![0.0, 0.0, 0.0];
+
+                for yaa in 0..stg.aa {
+                    for xaa in 0..stg.aa {
+                        let colour = get_colour(&escapes[(y * stg.aa + yaa) as usize][(x * stg.aa + xaa) as usize], t, &stg);
+                        sum[0] += colour[0];
+                        sum[1] += colour[1];
+                        sum[2] += colour[2];
+                    }
+                }
+
+                pix_row.push(sum.iter().map(|x| ((x / stg.aa_f / stg.aa_f).powf(1.0/2.2) * 255.0) as u8).collect::<Pixel>());
+            }
+            let val = (y, pix_row);
+            tx.send(val).unwrap();
+        });
+    }
+
+    // need to drop original tx, or rx iterator will never end
+    drop(tx);
+
+    let mut count = 0;
+    for msg in rx {
+        let (y, row) = msg;
+        data[y as usize] = row;
+        count += 1;
+
+        if stg.frames == 1 {
+            print!("\r{}% colourized", count * 100 / stg.height);
+            std::io::stdout().flush().unwrap();
+        }
+    }
+
+    if stg.frames == 1 {
+        println!();
+    }
+
+    data.into_iter()
+        .flatten()
+        .collect::<Vec<Pixel>>()
+        .into_iter()
+        .flatten()
+        .collect()
 }
