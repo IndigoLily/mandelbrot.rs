@@ -234,7 +234,7 @@ fn get_colour(escape: &Option<f64>, t: f64, stg: &Settings) -> Vec<f64> {
             },
 
             ColourAlgo::Bands(size) => {
-               let val = if (escape + t) % 1.0 < size {
+               let val = if (escape + t).rem_euclid(1.0) < size {
                    1.0
                } else {
                    0.0
