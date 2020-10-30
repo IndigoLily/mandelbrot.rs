@@ -40,6 +40,8 @@ struct Settings {
     speed:     f64,
     acc:       f64,
 
+    julia:     bool,
+
     colour_algo: ColourAlgo,
 }
 
@@ -48,7 +50,8 @@ impl Settings {
         width: u32, height: u32, frames: u32,
         aa: u32, bail: f64, max_itr: u32,
         center_x: f64, center_y: f64, zoom: f64,
-        speed: f64, acc: f64, colour_algo: ColourAlgo) -> Self
+        speed: f64, acc: f64, colour_algo: ColourAlgo,
+        julia: bool) -> Self
     {
         let smaller = if width < height { width } else { height };
         Settings {
@@ -69,6 +72,8 @@ impl Settings {
             center: Complex::new(center_x, center_y),
 
             speed, acc, colour_algo,
+
+            julia,
         }
     }
 }
@@ -108,6 +113,8 @@ fn main() {
         let sin_b     = env_or_default("sin_b", 1.0);
         let band_size = env_or_default("band_size", 0.5);
 
+        let julia = env_or_default("julia", false);
+
         let colour_algo = match env::var("colour_algo") {
             Ok(val) => match val.to_lowercase().as_str() {
                 "bw"        => ColourAlgo::BW,
@@ -133,7 +140,8 @@ fn main() {
                 width, height, frames,
                 aa, bail, max_itr,
                 center_x, center_y, zoom,
-                speed, acc, colour_algo
+                speed, acc, colour_algo,
+                julia,
             )
         )
     };
@@ -264,7 +272,12 @@ fn get_pixel(x: u32, y: u32, t: f64, stg: &Settings) -> Vec<u8> {
 
 // take a point in image coordinates, and return its location in the complex plane
 fn image_to_complex(x: f64, y: f64, stg: &Settings) -> Complex<f64> {
-    (Complex::new(x, y) - Complex::new(stg.width_f, stg.height_f) / 2.0) / stg.smaller_f * 4.0 / stg.zoom + stg.center
+    let c = (Complex::new(x, y) - Complex::new(stg.width_f, stg.height_f) / 2.0) / stg.smaller_f * 4.0 / stg.zoom;
+    if stg.julia {
+        c
+    } else {
+        c + stg.center
+    }
 }
 
 // calculate the escape time at a point c in the complex plane
@@ -272,8 +285,9 @@ fn image_to_complex(x: f64, y: f64, stg: &Settings) -> Complex<f64> {
 fn calc_at(c: &Complex<f64>, stg: &Settings) -> Option<f64> {
     let mut z = c.clone();
     let mut itr = 1;
+
     loop {
-        z = z * z + c;
+        z = z * z + if stg.julia { &stg.center } else { c };
 
         if z.norm_sqr() > stg.bail_sq {
             let itr = itr as f64;
