@@ -1,17 +1,20 @@
 use std::{
     env,
     fmt::Debug,
-    fs::{self, File},
-    io::Write,
-    sync::{mpsc, Arc},
+    fs::{ self, File },
+    io::{ Write, BufRead, BufReader },
+    sync::{ mpsc, Arc },
+    str::FromStr,
 };
 
 use png::{BitDepth, ColorType, Encoder};
 use num::Complex;
 use threadpool::ThreadPool;
+use rand::{thread_rng, Rng};
 
 use std::f64::consts::E;
 use std::f64::consts::TAU;
+use std::f64::consts::PI;
 
 type Pixel = Vec<u8>;
 
@@ -35,23 +38,27 @@ struct Settings {
     bail_sq:   f64,
 
     zoom:      f64,
+    angle:     f64,
     center:    Complex<f64>,
 
+    julia:     bool,
+    ctr_julia: Complex<f64>,
+
+    clr_algo:  ColourAlgo,
+    interp:    Interpolation,
+    inside:    Vec<f64>,
     speed:     f64,
     acc:       f64,
-
-    julia:     bool,
-
-    colour_algo: ColourAlgo,
 }
 
 impl Settings {
     fn new(
         width: u32, height: u32, frames: u32,
         aa: u32, bail: f64, max_itr: u32,
-        center_x: f64, center_y: f64, zoom: f64,
-        speed: f64, acc: f64, colour_algo: ColourAlgo,
-        julia: bool) -> Self
+        zoom: f64, angle: f64, center_x: f64, center_y: f64,
+        julia: bool, ctr_julia_x: f64, ctr_julia_y: f64, 
+        clr_algo: ColourAlgo, interp: Interpolation, inside: Vec<f64>, speed: f64, acc: f64,
+        ) -> Self
     {
         let smaller = if width < height { width } else { height };
         Settings {
@@ -69,11 +76,13 @@ impl Settings {
             bail_sq: bail * bail,
 
             zoom,
+            angle,
             center: Complex::new(center_x, center_y),
 
-            speed, acc, colour_algo,
-
             julia,
+            ctr_julia: Complex::new(ctr_julia_x, ctr_julia_y),
+
+            clr_algo, inside, interp, speed, acc,
         }
     }
 }
@@ -93,29 +102,34 @@ where
 
 fn main() {
     let stg = {
-        let width    = env_or_default("width", 640);
-        let height   = env_or_default("height", 640);
-        let frames   = env_or_default("frames", 1);
+        let width       = env_or_default("width", 640);
+        let height      = env_or_default("height", 640);
+        let frames      = env_or_default("frames", 1);
 
-        let aa       = env_or_default("aa", 1);
-        let bail     = env_or_default("bail", 20.0);
-        let max_itr  = env_or_default("itr", 100);
+        let aa          = env_or_default("aa", 1);
+        let bail        = env_or_default("bail", 20.0);
+        let max_itr     = env_or_default("itr", 100);
 
-        let zoom     = env_or_default("zoom", 1.0);
-        let center_x = env_or_default("center_x", 0.0);
-        let center_y = env_or_default("center_y", 0.0);
+        let zoom        = env_or_default("zoom", 1.0);
+        let angle       = env_or_default("angle", 0.0);
+        let center_x    = env_or_default("center_x", 0.0);
+        let center_y    = env_or_default("center_y", 0.0);
 
-        let speed    = env_or_default("speed", 1.0);
-        let acc      = env_or_default("acc", 1.0);
+        let julia       = env_or_default("julia", false);
+        let ctr_julia_x = env_or_default("ctr_julia_x", 0.0);
+        let ctr_julia_y = env_or_default("ctr_julia_y", 0.0);
 
-        let sin_r     = env_or_default("sin_r", 1.0);
-        let sin_g     = env_or_default("sin_g", 1.0);
-        let sin_b     = env_or_default("sin_b", 1.0);
-        let band_size = env_or_default("band_size", 0.5);
+        let inside      = hex_to_rgb(env_or_default("inside", "000000".to_string()));
+        let interp      = env_or_default("interp", Interpolation::Cosine);
+        let speed       = env_or_default("speed", 1.0);
+        let acc         = env_or_default("acc", 1.0);
 
-        let julia = env_or_default("julia", false);
+        let sin_r       = env_or_default("sin_r", 1.0);
+        let sin_g       = env_or_default("sin_g", 1.0);
+        let sin_b       = env_or_default("sin_b", 1.0);
+        let band_size   = env_or_default("band_size", 0.5);
 
-        let colour_algo = match env::var("colour_algo") {
+        let clr_algo = match env::var("clr_algo") {
             Ok(val) => match val.to_lowercase().as_str() {
                 "bw"        => ColourAlgo::BW,
                 "grey"      => ColourAlgo::Grey,
@@ -123,7 +137,8 @@ fn main() {
                 "bands"     => ColourAlgo::Bands(band_size),
                 "sin_mult"  => ColourAlgo::SineMult(sin_r, sin_g, sin_b),
                 "sin_add"   => ColourAlgo::SineAdd(sin_r, sin_g, sin_b),
-                _ => panic!("Couldn't parse colour_algo setting"),
+                "palette"   => ColourAlgo::Palette(load_palette(env::var("palette").unwrap())),
+                _ => panic!("Couldn't parse clr_algo setting"),
             },
             Err(_) => ColourAlgo::SineAdd(1.1, 1.2, 1.3),
         };
@@ -139,9 +154,9 @@ fn main() {
             Settings::new(
                 width, height, frames,
                 aa, bail, max_itr,
-                center_x, center_y, zoom,
-                speed, acc, colour_algo,
-                julia,
+                zoom, angle, center_x, center_y,
+                julia, ctr_julia_x, ctr_julia_y,
+                clr_algo, interp, inside, speed, acc,
             )
         )
     };
@@ -186,6 +201,45 @@ fn main() {
     println!("\nDone");
 }
 
+enum Interpolation {
+    None,
+    Linear,
+    Cosine,
+    Cubic,
+}
+
+impl FromStr for Interpolation {
+    type Err = ();
+
+    fn from_str(s: &str) -> Result<Interpolation, ()> {
+        match s.to_lowercase().as_str() {
+            "none" | "const"  => Ok(Interpolation::None),
+            "linear" | "lerp" => Ok(Interpolation::Linear),
+            "cos" | "cosine"  => Ok(Interpolation::Cosine),
+            "cubic"           => Ok(Interpolation::Cubic),
+            _ => Err(()),
+        }
+    }
+}
+
+fn linear_interpolate(a: f64, b: f64, c: f64) -> f64 {
+    (b-a)*c+a
+}
+
+fn cosine_interpolate(y1: f64, y2: f64, mu: f64) -> f64 {
+    let mu2 = (1.0 - (mu * PI).cos()) / 2.0;
+    y1 * (1.0 - mu2) + y2 * mu2
+}
+
+fn cubic_interpolate(y0: f64, y1: f64, y2: f64, y3: f64, mu: f64) -> f64 {
+    let mu2 = mu * mu;
+    let a0  = y3 - y2 - y0 + y1;
+    let a1  = y0 - y1 - a0;
+    let a2  = y2 - y0;
+    let a3  = y1;
+    a0 * mu * mu2 + a1 * mu2 + a2 * mu + a3
+}
+
 enum ColourAlgo {
     BW,
     Grey,
@@ -193,12 +247,34 @@ enum ColourAlgo {
     RGB,
     SineMult(f64, f64, f64),
     SineAdd(f64, f64, f64),
+    Palette(Vec<Vec<f64>>),
+    //Iq([[f64; 3]; 4]),
 }
+
+fn hex_to_rgb(hex: String) -> Vec<f64> {
+    let hex = hex.trim_start_matches('#').to_lowercase();
+    if hex.len() != 6 {
+        panic!("RGB hex wrong length");
+    }
+    vec![
+        (u8::from_str_radix(&hex[0..2], 16).unwrap() as f64 / u8::MAX as f64).powf(2.2),
+        (u8::from_str_radix(&hex[2..4], 16).unwrap() as f64 / u8::MAX as f64).powf(2.2),
+        (u8::from_str_radix(&hex[4..6], 16).unwrap() as f64 / u8::MAX as f64).powf(2.2),
+    ]
+}
+
+fn load_palette(path: String) -> Vec<Vec<f64>>{
+    let file = File::open(path).unwrap();
+    let reader = BufReader::new(file);
+    reader.lines().map(|x| hex_to_rgb(x.unwrap())).collect()
+}
+
 
 fn get_colour(escape: &Option<f64>, t: f64, stg: &Settings) -> Vec<f64> {
     if let Some(escape) = escape {
         let escape = escape.powf(stg.acc) * stg.speed;
-        match stg.colour_algo {
+
+        match &stg.clr_algo {
             ColourAlgo::BW => vec![1.0, 1.0, 1.0],
 
             ColourAlgo::Grey => {
@@ -207,7 +283,7 @@ fn get_colour(escape: &Option<f64>, t: f64, stg: &Settings) -> Vec<f64> {
             },
 
             ColourAlgo::Bands(size) => {
-               let val = if (escape + t).rem_euclid(1.0) < size {
+               let val = if (escape + t).rem_euclid(1.0) < *size {
                    1.0
                } else {
                    0.0
@@ -241,12 +317,62 @@ fn get_colour(escape: &Option<f64>, t: f64, stg: &Settings) -> Vec<f64> {
                     (escape * 2.0 + TAU * b + t * TAU).sin() / 2.0 + 0.5,
                 ]
             },
+
+            ColourAlgo::Palette(colours) => {
+                let escape = escape + t * colours.len() as f64;
+                let i1 = (escape as usize) % colours.len();
+                let i2 = (i1 + 1) % colours.len();
+                let i3 = (i1 + 2) % colours.len();
+                let i0 = (i1 + colours.len() - 1) % colours.len();
+                let percent = escape % 1.0;
+
+                match &stg.interp {
+                    Interpolation::None => colours[i1].clone(),
+
+                    Interpolation::Linear => vec![
+                        linear_interpolate(colours[i1][0], colours[i2][0], percent),
+                        linear_interpolate(colours[i1][1], colours[i2][1], percent),
+                        linear_interpolate(colours[i1][2], colours[i2][2], percent),
+                    ],
+
+                    Interpolation::Cosine => vec![
+                        cosine_interpolate(colours[i1][0], colours[i2][0], percent),
+                        cosine_interpolate(colours[i1][1], colours[i2][1], percent),
+                        cosine_interpolate(colours[i1][2], colours[i2][2], percent),
+                    ],
+
+                    Interpolation::Cubic => vec![
+                        cubic_interpolate(
+                            colours[i0][0],
+                            colours[i1][0],
+                            colours[i2][0],
+                            colours[i3][0],
+                            percent,
+                        ),
+                        cubic_interpolate(
+                            colours[i0][1],
+                            colours[i1][1],
+                            colours[i2][1],
+                            colours[i3][1],
+                            percent,
+                        ),
+                        cubic_interpolate(
+                            colours[i0][2],
+                            colours[i1][2],
+                            colours[i2][2],
+                            colours[i3][2],
+                            percent,
+                        ),
+                    ]
+                }
+            },
         }
     } else {
-        vec![0.0, 0.0, 0.0]
+        stg.inside.clone()
     }
 }
 
+#[allow(dead_code)]
 fn get_pixel(x: u32, y: u32, t: f64, stg: &Settings) -> Vec<u8> {
     let mut sum: Vec<f64> = vec![0.0, 0.0, 0.0];
     let x = x as f64;
@@ -270,11 +396,20 @@ fn get_pixel(x: u32, y: u32, t: f64, stg: &Settings) -> Vec<u8> {
         .collect()
 }
 
+fn deg_to_rad(deg: f64) -> f64 {
+    deg / 360.0 * TAU
+}
+
+fn rotate_complex(c: &Complex<f64>, angle: f64, origin: &Complex<f64>) -> Complex<f64> {
+    let angle = deg_to_rad(angle);
+    (c - origin) * Complex::new(angle.cos(), angle.sin()) + origin
+}
+
 // take a point in image coordinates, and return its location in the complex plane
 fn image_to_complex(x: f64, y: f64, stg: &Settings) -> Complex<f64> {
     let c = (Complex::new(x, y) - Complex::new(stg.width_f, stg.height_f) / 2.0) / stg.smaller_f * 4.0 / stg.zoom;
     if stg.julia {
-        c
+        rotate_complex(&c, stg.angle, &Complex::new(0.0, 0.0)) + stg.ctr_julia
     } else {
         c + stg.center
     }
@@ -313,9 +448,10 @@ fn calc_escapes(stg: &Arc<Settings>, pool: &ThreadPool) -> Vec<Vec<Option<f64>>>
         let stg = Arc::clone(stg);
 
         pool.execute(move || {
+            let mut rng = thread_rng();
             let mut row: Vec<Option<f64>> = Vec::with_capacity((stg.width * stg.aa) as usize);
             for x in 0 .. stg.width * stg.aa {
-                let c = image_to_complex(x as f64 / stg.aa_f, y as f64 / stg.aa_f, &stg);
+                let c = image_to_complex((x / stg.aa) as f64 + rng.gen_range(0.0, 1.0), (y / stg.aa) as f64 + rng.gen_range(0.0, 1.0), &stg);
                 row.push(calc_at(&c, &stg));
             }
             let val = (y, row);
@@ -366,7 +502,7 @@ fn colourize(escapes: &Arc<Vec<Vec<Option<f64>>>>, t: f64, stg: &Arc<Settings>, 
                     }
                 }
 
-                pix_row.push(sum.iter().map(|x| ((x / stg.aa_f / stg.aa_f).powf(1.0/2.2) * 255.0) as u8).collect::<Pixel>());
+                pix_row.push(sum.iter().map(|x| ((x / stg.aa_f / stg.aa_f).powf(1.0 / 2.2) * 255.0) as u8).collect::<Pixel>());
             }
             let val = (y, pix_row);
             tx.send(val).unwrap();
