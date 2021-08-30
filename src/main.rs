@@ -35,6 +35,14 @@ mod matrix {
             Matrix { width, height, area: width * height, vec }
         }
 
+        pub fn width(&self) -> usize {
+            self.width
+        }
+
+        pub fn height(&self) -> usize {
+            self.height
+        }
+
         fn index_at(&self, x: usize, y: usize) -> Option<usize> {
             if x < self.width && y < self.height {
                 Some(y * self.width + x)
@@ -61,6 +69,12 @@ mod matrix {
             } else {
                 None
             }
+        }
+    }
+
+    impl<T> From<Matrix<T>> for Vec<T> {
+        fn from(matrix: Matrix<T>) -> Self {
+            matrix.vec
         }
     }
 
@@ -542,8 +556,8 @@ fn calc_at(c: &Complex<f64>, stg: &Settings) -> EscapeTime {
 fn calc_escapes(stg: &Arc<Settings>, pool: &ThreadPool) -> Matrix<EscapeTime> {
     let (tx, rx) = mpsc::channel();
 
-    let mut escapes: Vec<Vec<EscapeTime>> = Vec::new();
-    escapes.resize((stg.height * stg.aa) as usize, Vec::new());
+    let mut escapes: Matrix<EscapeTime> = Matrix::new((stg.width * stg.aa) as usize, (stg.height * stg.aa) as usize);
+    let width = escapes.width();
 
     for y in 0 .. stg.height * stg.aa {
         let tx = tx.clone();
@@ -551,7 +565,7 @@ fn calc_escapes(stg: &Arc<Settings>, pool: &ThreadPool) -> Matrix<EscapeTime> {
 
         pool.execute(move || {
             let mut rng = thread_rng();
-            let mut row: Vec<EscapeTime> = Vec::with_capacity((stg.width * stg.aa) as usize);
+            let mut row: Vec<EscapeTime> = Vec::with_capacity(width);
             for x in 0 .. stg.width * stg.aa {
                 let c = image_to_complex((x / stg.aa) as f64 + rng.gen_range(0.0, 1.0), (y / stg.aa) as f64 + rng.gen_range(0.0, 1.0), &stg);
                 row.push(calc_at(&c, &stg));
@@ -567,7 +581,9 @@ fn calc_escapes(stg: &Arc<Settings>, pool: &ThreadPool) -> Matrix<EscapeTime> {
     let mut count = 0;
     for msg in rx {
         let (y, row) = msg;
-        escapes[y as usize] = row;
+        for (x, esc) in row.iter().enumerate() {
+            *escapes.get_mut(x as usize, y as usize).unwrap() = *esc;
+        }
         count += 1;
 
         print!("\r{}% calculated", count * 100 / stg.height / stg.aa);
@@ -576,14 +592,14 @@ fn calc_escapes(stg: &Arc<Settings>, pool: &ThreadPool) -> Matrix<EscapeTime> {
 
     println!();
 
-    Matrix::from(escapes)
+    escapes
 }
 
 fn colourize(escapes: &Arc<Matrix<EscapeTime>>, t: f64, stg: &Arc<Settings>, pool: &ThreadPool) -> Vec<u8> {
     let (tx, rx) = mpsc::channel();
 
-    let mut data: Vec<Vec<Pixel>> = Vec::new();
-    data.resize(stg.height as usize, Vec::new());
+    let mut data: Matrix<Pixel> = Matrix::new(stg.width as usize, stg.height as usize);
+    let width = data.width();
 
     for y in 0..stg.height {
         let tx = tx.clone();
@@ -591,7 +607,7 @@ fn colourize(escapes: &Arc<Matrix<EscapeTime>>, t: f64, stg: &Arc<Settings>, poo
         let escapes = Arc::clone(&escapes);
 
         pool.execute(move || {
-            let mut pix_row: Vec<Pixel> = Vec::with_capacity(stg.width as usize);
+            let mut pix_row: Vec<Pixel> = Vec::with_capacity(width);
             for x in 0..stg.width {
                 let mut sum: Vec<f64> = vec![0.0, 0.0, 0.0];
 
@@ -617,7 +633,9 @@ fn colourize(escapes: &Arc<Matrix<EscapeTime>>, t: f64, stg: &Arc<Settings>, poo
     let mut count = 0;
     for msg in rx {
         let (y, row) = msg;
-        data[y as usize] = row;
+        for (x, pix) in row.into_iter().enumerate() {
+            *data.get_mut(x as usize, y as usize).unwrap() = pix;
+        }
         count += 1;
 
         if stg.frames == 1 {
@@ -630,10 +648,5 @@ fn colourize(escapes: &Arc<Matrix<EscapeTime>>, t: f64, stg: &Arc<Settings>, poo
         println!();
     }
 
-    data.into_iter()
-        .flatten()
-        .collect::<Vec<Pixel>>()
-        .into_iter()
-        .flatten()
-        .collect()
+    Vec::from(data).into_iter().flatten().collect()
 }
