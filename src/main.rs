@@ -32,6 +32,7 @@ struct Settings {
     height_f:  f64,
     smaller_f: f64,
     frames_f:  f64,
+    start_t:   f64,
 
     aa_f:      f64,
     bail:      f64,
@@ -53,7 +54,7 @@ struct Settings {
 
 impl Settings {
     fn new(
-        width: u32, height: u32, frames: u32,
+        width: u32, height: u32, frames: u32, start_t: f64,
         aa: u32, bail: f64, max_itr: u32,
         zoom: f64, angle: f64, center_x: f64, center_y: f64,
         julia: bool, ctr_julia_x: f64, ctr_julia_y: f64, 
@@ -62,7 +63,7 @@ impl Settings {
     {
         let smaller = if width < height { width } else { height };
         Settings {
-            width, height, smaller, frames,
+            width, height, smaller, frames, start_t,
 
             aa, max_itr,
 
@@ -105,6 +106,7 @@ fn main() {
         let width       = env_or_default("width", 640);
         let height      = env_or_default("height", 640);
         let frames      = env_or_default("frames", 1);
+        let start_t     = env_or_default("start", 0.0);
 
         let aa          = env_or_default("aa", 1);
         let bail        = env_or_default("bail", 20.0);
@@ -152,7 +154,7 @@ fn main() {
 
         Arc::new(
             Settings::new(
-                width, height, frames,
+                width, height, frames, start_t,
                 aa, bail, max_itr,
                 zoom, angle, center_x, center_y,
                 julia, ctr_julia_x, ctr_julia_y,
@@ -161,41 +163,77 @@ fn main() {
         )
     };
 
+    let pool = threadpool::ThreadPool::new(env_or_default("threads", 1));
+
     if stg.frames > 1 {
         fs::remove_dir_all("frames").unwrap();
         fs::create_dir("frames").unwrap();
-    }
 
-    let pool = threadpool::ThreadPool::new(env_or_default("threads", 1));
+        let escapes: Arc<Vec<Vec<Option<f64>>>> = Arc::new(calc_escapes(&stg, &pool));
 
-    let escapes: Arc<Vec<Vec<Option<f64>>>> = Arc::new(calc_escapes(&stg, &pool));
+        for frame in 0..stg.frames {
+            // t is in the range [0, 1)
+            let t = frame as f64 / stg.frames_f;
 
-    for frame in 0..stg.frames {
-        // t is in the range [0, 1)
-        let t = frame as f64 / stg.frames_f;
+            let image_data: Vec<u8> = colourize(&escapes, t, &stg, &pool);
 
-        let image_data: Vec<u8> = colourize(&escapes, t, &stg, &pool);
+            let file = File::create(if stg.frames == 1 {
+                String::from("mandelbrot.png")
+            } else {
+                format!("frames/{}.png", frame)
+            })
+            .expect("Couldn't open file");
 
-        let file = File::create(if stg.frames == 1 {
-            String::from("mandelbrot.png")
-        } else {
-            format!("frames/{}.png", frame)
-        })
-        .expect("Couldn't open file");
+            let mut encoder = Encoder::new(file, stg.width, stg.height);
+            encoder.set_color(ColorType::RGB);
+            encoder.set_depth(BitDepth::Eight);
 
+            let mut writer = encoder.write_header().unwrap();
+            writer
+                .write_image_data(&image_data)
+                .expect("Couldn't write to file");
+
+            print!("\r{}/{} frames", frame + 1, stg.frames);
+            std::io::stdout().flush().unwrap();
+        }
+    } else {
+        let (tx, rx) = mpsc::channel();
+
+        for y in 0..stg.height {
+            for x in 0..stg.width {
+                let tx = tx.clone();
+                let stg = stg.clone();
+                pool.execute(move || {
+                    let p = get_pixel(x, y, stg.start_t, &stg);
+                    tx.send((x, y, p)).unwrap();
+                });
+            }
+        }
+
+        // need to drop original tx, or rx iterator will never end
+        drop(tx);
+
+        let mut image_data: Vec<u8> = vec![0; (stg.width * stg.height * 3) as usize];
+        let mut count = 0;
+        for msg in rx {
+            let (x, y, p) = msg;
+            let idx = ((stg.width * y + x) * 3) as usize;
+            image_data[idx + 0] = p[0];
+            image_data[idx + 1] = p[1];
+            image_data[idx + 2] = p[2];
+            count += 1;
+            print!("\r{}% rendered", count * 100 / stg.width / stg.height);
+            std::io::stdout().flush().unwrap();
+        }
+
+        let file = File::create("mandelbrot.png").expect("Couldn't open file");
         let mut encoder = Encoder::new(file, stg.width, stg.height);
         encoder.set_color(ColorType::RGB);
         encoder.set_depth(BitDepth::Eight);
-
         let mut writer = encoder.write_header().unwrap();
         writer
             .write_image_data(&image_data)
             .expect("Couldn't write to file");
-
-        if stg.frames > 1 {
-            print!("\r{}/{} frames", frame + 1, stg.frames);
-            std::io::stdout().flush().unwrap();
-        }
     }
 
     println!("\nDone");
@@ -268,7 +306,6 @@ fn load_palette(path: String) -> Vec<Vec<f64>>{
     let reader = BufReader::new(file);
     reader.lines().map(|x| hex_to_rgb(x.unwrap())).collect()
 }
-
 
 fn get_colour(escape: &Option<f64>, t: f64, stg: &Settings) -> Vec<f64> {
     if let Some(escape) = escape {
@@ -372,24 +409,19 @@ fn get_colour(escape: &Option<f64>, t: f64, stg: &Settings) -> Vec<f64> {
     }
 }
 
-#[allow(dead_code)]
 fn get_pixel(x: u32, y: u32, t: f64, stg: &Settings) -> Vec<u8> {
     let mut sum: Vec<f64> = vec![0.0, 0.0, 0.0];
+    let mut rng = thread_rng();
     let x = x as f64;
     let y = y as f64;
-    for xaa in (0..stg.aa).map(|x| x as f64) {
-        let nx = x + xaa / stg.aa_f;
-        for yaa in (0..stg.aa).map(|x| x as f64) {
-            let ny = y + yaa / stg.aa_f;
+    for _ in 0 .. stg.aa * stg.aa {
+        let c = image_to_complex(x + rng.gen_range(0.0, 1.0), y + rng.gen_range(0.0, 1.0), &stg);
+        let esc = calc_at(&c, stg);
+        let colour = get_colour(&esc, t, stg);
 
-            let c = image_to_complex(nx, ny, stg);
-            let esc = calc_at(&c, stg);
-            let colour = get_colour(&esc, t, stg);
-
-            sum[0] += colour[0];
-            sum[1] += colour[1];
-            sum[2] += colour[2];
-        }
+        sum[0] += colour[0];
+        sum[1] += colour[1];
+        sum[2] += colour[2];
     }
     sum.iter()
         .map(|x| ((x / stg.aa_f / stg.aa_f).powf(1.0 / 2.2) * 255.0) as u8)
