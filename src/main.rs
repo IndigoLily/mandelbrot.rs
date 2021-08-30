@@ -18,6 +18,76 @@ use std::f64::consts::PI;
 
 type Pixel = Vec<u8>;
 
+type EscapeTime = Option<f64>;
+
+mod matrix {
+    pub struct Matrix<T> {
+        width: usize,
+        height: usize,
+        area: usize,
+        vec: Vec<T>,
+    }
+
+    impl<T> Matrix<T> {
+        pub fn from_vec(vec: Vec<T>, width: usize) -> Self {
+            let height = vec.len() / width;
+            assert!(width == vec.len() / height);
+            Matrix { width, height, area: width * height, vec }
+        }
+
+        fn index_at(&self, x: usize, y: usize) -> Option<usize> {
+            if x < self.width && y < self.height {
+                Some(y * self.width + x)
+            } else {
+                None
+            }
+        }
+
+        pub fn get(&self, x: usize, y: usize) -> Option<&T> {
+            if let Some(idx) = self.index_at(x, y) {
+                unsafe {
+                    Some(self.vec.get_unchecked(idx))
+                }
+            } else {
+                None
+            }
+        }
+
+        pub fn get_mut(&mut self, x: usize, y: usize) -> Option<&mut T> {
+            if let Some(idx) = self.index_at(x, y) {
+                unsafe {
+                    Some(self.vec.get_unchecked_mut(idx))
+                }
+            } else {
+                None
+            }
+        }
+    }
+
+    impl<T> From<Vec<Vec<T>>> for Matrix<T> {
+        fn from(vecs: Vec<Vec<T>>) -> Self {
+            let len = vecs[0].len();
+            assert!(vecs.iter().all(|v| v.len() == len));
+            Matrix::from_vec(vecs.into_iter().flatten().collect(), len)
+        }
+    }
+
+    impl<T: Clone> Matrix<T> {
+        pub fn with_default(width: usize, height: usize, default: T) -> Self {
+            let area = width * height;
+            Matrix { width, height, area, vec: vec![default; area] }
+        }
+    }
+
+    impl<T: Clone + Default> Matrix<T> {
+        pub fn new(width: usize, height: usize) -> Self {
+            Matrix::with_default(width, height, Default::default())
+        }
+    }
+}
+
+use matrix::Matrix;
+
 #[allow(dead_code)]
 struct Settings {
     width:     u32,
@@ -73,7 +143,7 @@ impl Settings {
             frames_f:  frames  as f64,
 
             aa_f:    aa as f64,
-            bail:    bail,
+            bail,
             bail_sq: bail * bail,
 
             zoom,
@@ -169,7 +239,7 @@ fn main() {
         fs::remove_dir_all("frames").unwrap();
         fs::create_dir("frames").unwrap();
 
-        let escapes: Arc<Vec<Vec<Option<f64>>>> = Arc::new(calc_escapes(&stg, &pool));
+        let escapes: Arc<Matrix<EscapeTime>> = Arc::new(calc_escapes(&stg, &pool));
 
         for frame in 0..stg.frames {
             // t is in the range [0, 1)
@@ -307,7 +377,7 @@ fn load_palette(path: String) -> Vec<Vec<f64>>{
     reader.lines().map(|x| hex_to_rgb(x.unwrap())).collect()
 }
 
-fn get_colour(escape: &Option<f64>, t: f64, stg: &Settings) -> Vec<f64> {
+fn get_colour(escape: &EscapeTime, t: f64, stg: &Settings) -> Vec<f64> {
     if let Some(escape) = escape {
         let escape = escape.powf(stg.acc) * stg.speed;
 
@@ -449,7 +519,7 @@ fn image_to_complex(x: f64, y: f64, stg: &Settings) -> Complex<f64> {
 
 // calculate the escape time at a point c in the complex plane
 // if c is in the Mandelbrot set, returns None
-fn calc_at(c: &Complex<f64>, stg: &Settings) -> Option<f64> {
+fn calc_at(c: &Complex<f64>, stg: &Settings) -> EscapeTime {
     let mut z = c.clone();
     let mut itr = 1;
 
@@ -469,10 +539,10 @@ fn calc_at(c: &Complex<f64>, stg: &Settings) -> Option<f64> {
     }
 }
 
-fn calc_escapes(stg: &Arc<Settings>, pool: &ThreadPool) -> Vec<Vec<Option<f64>>> {
+fn calc_escapes(stg: &Arc<Settings>, pool: &ThreadPool) -> Matrix<EscapeTime> {
     let (tx, rx) = mpsc::channel();
 
-    let mut escapes: Vec<Vec<Option<f64>>> = Vec::new();
+    let mut escapes: Vec<Vec<EscapeTime>> = Vec::new();
     escapes.resize((stg.height * stg.aa) as usize, Vec::new());
 
     for y in 0 .. stg.height * stg.aa {
@@ -481,7 +551,7 @@ fn calc_escapes(stg: &Arc<Settings>, pool: &ThreadPool) -> Vec<Vec<Option<f64>>>
 
         pool.execute(move || {
             let mut rng = thread_rng();
-            let mut row: Vec<Option<f64>> = Vec::with_capacity((stg.width * stg.aa) as usize);
+            let mut row: Vec<EscapeTime> = Vec::with_capacity((stg.width * stg.aa) as usize);
             for x in 0 .. stg.width * stg.aa {
                 let c = image_to_complex((x / stg.aa) as f64 + rng.gen_range(0.0, 1.0), (y / stg.aa) as f64 + rng.gen_range(0.0, 1.0), &stg);
                 row.push(calc_at(&c, &stg));
@@ -506,10 +576,10 @@ fn calc_escapes(stg: &Arc<Settings>, pool: &ThreadPool) -> Vec<Vec<Option<f64>>>
 
     println!();
 
-    escapes
+    Matrix::from(escapes)
 }
 
-fn colourize(escapes: &Arc<Vec<Vec<Option<f64>>>>, t: f64, stg: &Arc<Settings>, pool: &ThreadPool) -> Vec<u8> {
+fn colourize(escapes: &Arc<Matrix<EscapeTime>>, t: f64, stg: &Arc<Settings>, pool: &ThreadPool) -> Vec<u8> {
     let (tx, rx) = mpsc::channel();
 
     let mut data: Vec<Vec<Pixel>> = Vec::new();
@@ -527,7 +597,7 @@ fn colourize(escapes: &Arc<Vec<Vec<Option<f64>>>>, t: f64, stg: &Arc<Settings>, 
 
                 for yaa in 0..stg.aa {
                     for xaa in 0..stg.aa {
-                        let colour = get_colour(&escapes[(y * stg.aa + yaa) as usize][(x * stg.aa + xaa) as usize], t, &stg);
+                        let colour = get_colour(escapes.get((y * stg.aa + yaa) as usize, (x * stg.aa + xaa) as usize).unwrap(), t, &stg);
                         sum[0] += colour[0];
                         sum[1] += colour[1];
                         sum[2] += colour[2];
