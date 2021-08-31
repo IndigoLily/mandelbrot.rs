@@ -12,7 +12,6 @@ use std::{
 use png::{BitDepth, ColorType, Encoder};
 use num::Complex;
 use threadpool::ThreadPool;
-use rand::{thread_rng, Rng};
 
 use std::f64::consts::E;
 use std::f64::consts::TAU;
@@ -47,7 +46,6 @@ mod matrix {
         }
 
         fn index_at(&self, x: usize, y: usize) -> Option<usize> {
-            let (x, y) = (y, x);
             if x < self.width && y < self.height {
                 Some(y * self.width + x)
             } else {
@@ -616,7 +614,7 @@ fn aa(x: usize, y: usize, t: f64, stg: &Settings, escapes: &Matrix<EscapeTime>) 
     let mut sum: Colour = [0.0; 3];
     for yaa in 0..stg.aa {
         for xaa in 0..stg.aa {
-            let sample = get_colour(escapes.get(y * stg.aa + yaa, x * stg.aa + xaa).unwrap(), t, stg);
+            let sample = get_colour(escapes.get(x * stg.aa + xaa, y * stg.aa + yaa).unwrap(), t, stg);
             for i in 0..3 {
                 sum[i] += sample[i];
             }
@@ -693,10 +691,9 @@ fn calc_escapes(stg: &Arc<Settings>, pool: &ThreadPool) -> Matrix<EscapeTime> {
         let stg = Arc::clone(stg);
 
         pool.execute(move || {
-            let mut rng = thread_rng();
             let mut row: Vec<EscapeTime> = Vec::with_capacity(width);
             for x in 0 .. stg.width * stg.aa {
-                let c = image_to_complex((x / stg.aa) as f64 + rng.gen_range(0.0, 1.0), (y / stg.aa) as f64 + rng.gen_range(0.0, 1.0), &stg);
+                let c = image_to_complex((x / stg.aa) as f64, (y / stg.aa) as f64, &stg);
                 row.push(calc_at(&c, &stg));
             }
             let val = (y, row);
