@@ -296,6 +296,7 @@ fn main() {
     let mut stg = Settings::new();
 
     {
+        // if env var exists, parse and set stg to that value
         macro_rules! setting {
             ($name:ident) => {
                 if let Ok($name) = env::var(stringify!($name)) {
@@ -359,7 +360,7 @@ fn main() {
         assert!(stg.frames >= 1, "Frames must be at least 1");
         assert!(stg.aa     >= 1, "Anti-aliasing level must be at least 1");
         assert!(stg.bail   >= 20.0, "Bailout must be at least 20");
-        assert!(0.0 <= band_size && band_size <= 1.0, "Band size must be between 0 and 1");
+        assert!((0.0..=1.0).contains(&band_size), "Band size must be between 0 and 1");
     }
 
     let stg = Arc::new(stg);
@@ -565,7 +566,7 @@ fn get_colour(escape: &EscapeTime, t: f64, stg: &Settings) -> Colour {
                 let percent = escape % 1.0;
 
                 match &stg.interp {
-                    Interpolation::None => colours[i1].clone(),
+                    Interpolation::None => colours[i1],
 
                     Interpolation::Linear => [
                         linear_interpolate(colours[i1][0], colours[i2][0], percent),
@@ -606,7 +607,7 @@ fn get_colour(escape: &EscapeTime, t: f64, stg: &Settings) -> Colour {
             },
         }
     } else {
-        stg.inside.clone()
+        stg.inside
     }
 }
 
@@ -615,14 +616,14 @@ fn aa(x: usize, y: usize, t: f64, stg: &Settings, escapes: &Matrix<EscapeTime>) 
     let mut sum: Colour = [0.0; 3];
     for yaa in 0..stg.aa {
         for xaa in 0..stg.aa {
-            let sample = get_colour(escapes.get(y * stg.aa + yaa, x * stg.aa + xaa).unwrap(), t, &stg);
+            let sample = get_colour(escapes.get(y * stg.aa + yaa, x * stg.aa + xaa).unwrap(), t, stg);
             for i in 0..3 {
                 sum[i] += sample[i];
             }
         }
     }
-    for i in 0..3 {
-        sum[i] /= stg.aa_f * stg.aa_f;
+    for c in &mut sum {
+        *c /= stg.aa_f * stg.aa_f;
     }
     sum.map(|x| (x.powf(1.0 / 2.2) * 255.0) as u8)
 }
@@ -633,7 +634,7 @@ fn get_pixel(x: usize, y: usize, t: f64, stg: &Settings) -> Pixel {
     let y = y as f64;
     for yaa in 0..stg.aa {
         for xaa in 0..stg.aa {
-            let c = image_to_complex(x + xaa as f64 / stg.aa_f, y + yaa as f64 / stg.aa_f, &stg);
+            let c = image_to_complex(x + xaa as f64 / stg.aa_f, y + yaa as f64 / stg.aa_f, stg);
             *escapes.get_mut(xaa, yaa).unwrap() = calc_at(&c, stg);
         }
     }
@@ -731,8 +732,8 @@ fn colourize(escapes: &Arc<Matrix<EscapeTime>>, t: f64, stg: &Arc<Settings>, poo
 
     for y in 0..stg.height {
         let tx = tx.clone();
-        let stg = Arc::clone(&stg);
-        let escapes = Arc::clone(&escapes);
+        let stg = Arc::clone(stg);
+        let escapes = Arc::clone(escapes);
 
         pool.execute(move || {
             tx.send((y, (0..stg.width).map(|x| aa(x,y,t,&stg,&escapes)).collect::<Vec<Pixel>>())).unwrap();
