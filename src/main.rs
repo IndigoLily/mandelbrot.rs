@@ -1,3 +1,5 @@
+#![feature(array_map)]
+
 use std::{
     env,
     fmt::Debug,
@@ -16,7 +18,8 @@ use std::f64::consts::E;
 use std::f64::consts::TAU;
 use std::f64::consts::PI;
 
-type Pixel = Vec<u8>;
+type Pixel = [u8; 3];
+type Colour = [f64; 3];
 
 type EscapeTime = Option<f64>;
 
@@ -44,6 +47,7 @@ mod matrix {
         }
 
         fn index_at(&self, x: usize, y: usize) -> Option<usize> {
+            let (x, y) = (y, x);
             if x < self.width && y < self.height {
                 Some(y * self.width + x)
             } else {
@@ -97,6 +101,10 @@ mod matrix {
         pub fn new(width: usize, height: usize) -> Self {
             Matrix::with_default(width, height, Default::default())
         }
+
+        pub fn square(side: usize) -> Self {
+            Matrix::with_default(side, side, Default::default())
+        }
     }
 }
 
@@ -131,7 +139,7 @@ struct Settings {
 
     clr_algo:  ColourAlgo,
     interp:    Interpolation,
-    inside:    Vec<f64>,
+    inside:    Colour,
     speed:     f64,
     acc:       f64,
 }
@@ -142,7 +150,7 @@ impl Settings {
         aa: u32, bail: f64, max_itr: u32,
         zoom: f64, angle: f64, center_x: f64, center_y: f64,
         julia: bool, ctr_julia_x: f64, ctr_julia_y: f64, 
-        clr_algo: ColourAlgo, interp: Interpolation, inside: Vec<f64>, speed: f64, acc: f64,
+        clr_algo: ColourAlgo, interp: Interpolation, inside: Colour, speed: f64, acc: f64,
         ) -> Self
     {
         let smaller = if width < height { width } else { height };
@@ -369,38 +377,38 @@ enum ColourAlgo {
     RGB,
     SineMult(f64, f64, f64),
     SineAdd(f64, f64, f64),
-    Palette(Vec<Vec<f64>>),
+    Palette(Vec<Colour>),
     //Iq([[f64; 3]; 4]),
 }
 
-fn hex_to_rgb(hex: String) -> Vec<f64> {
+fn hex_to_rgb(hex: String) -> Colour {
     let hex = hex.trim_start_matches('#').to_lowercase();
     if hex.len() != 6 {
         panic!("RGB hex wrong length");
     }
-    vec![
+    [
         (u8::from_str_radix(&hex[0..2], 16).unwrap() as f64 / u8::MAX as f64).powf(2.2),
         (u8::from_str_radix(&hex[2..4], 16).unwrap() as f64 / u8::MAX as f64).powf(2.2),
         (u8::from_str_radix(&hex[4..6], 16).unwrap() as f64 / u8::MAX as f64).powf(2.2),
     ]
 }
 
-fn load_palette(path: String) -> Vec<Vec<f64>>{
+fn load_palette(path: String) -> Vec<Colour> {
     let file = File::open(path).unwrap();
     let reader = BufReader::new(file);
     reader.lines().map(|x| hex_to_rgb(x.unwrap())).collect()
 }
 
-fn get_colour(escape: &EscapeTime, t: f64, stg: &Settings) -> Vec<f64> {
+fn get_colour(escape: &EscapeTime, t: f64, stg: &Settings) -> Colour {
     if let Some(escape) = escape {
         let escape = escape.powf(stg.acc) * stg.speed;
 
         match &stg.clr_algo {
-            ColourAlgo::BW => vec![1.0, 1.0, 1.0],
+            ColourAlgo::BW => [1.0, 1.0, 1.0],
 
             ColourAlgo::Grey => {
                 let val = ((escape * 2.0 + t * TAU).sin() / 2.0 + 0.5).powf(2.2);
-                vec![val, val, val]
+                [val; 3]
             },
 
             ColourAlgo::Bands(size) => {
@@ -409,22 +417,22 @@ fn get_colour(escape: &EscapeTime, t: f64, stg: &Settings) -> Vec<f64> {
                } else {
                    0.0
                };
-               vec![val, val, val]
+               [val; 3]
             },
 
             ColourAlgo::RGB => {
                let val = (escape + t) % 1.0;
                if val < 1.0/3.0 {
-                   vec![1.0, 0.0, 0.0]
+                   [1.0, 0.0, 0.0]
                } else if val < 2.0/3.0 {
-                   vec![0.0, 1.0, 0.0]
+                   [0.0, 1.0, 0.0]
                } else {
-                   vec![0.0, 0.0, 1.0]
+                   [0.0, 0.0, 1.0]
                }
             },
 
             ColourAlgo::SineMult(r, g, b) => {
-                vec![
+                [
                     (escape / 2.0 * r + t * TAU).sin() / 2.0 + 0.5,
                     (escape / 2.0 * g + t * TAU).sin() / 2.0 + 0.5,
                     (escape / 2.0 * b + t * TAU).sin() / 2.0 + 0.5,
@@ -432,7 +440,7 @@ fn get_colour(escape: &EscapeTime, t: f64, stg: &Settings) -> Vec<f64> {
             },
 
             ColourAlgo::SineAdd(r, g, b) => {
-                vec![
+                [
                     (escape * 2.0 + TAU * r + t * TAU).sin() / 2.0 + 0.5,
                     (escape * 2.0 + TAU * g + t * TAU).sin() / 2.0 + 0.5,
                     (escape * 2.0 + TAU * b + t * TAU).sin() / 2.0 + 0.5,
@@ -450,19 +458,19 @@ fn get_colour(escape: &EscapeTime, t: f64, stg: &Settings) -> Vec<f64> {
                 match &stg.interp {
                     Interpolation::None => colours[i1].clone(),
 
-                    Interpolation::Linear => vec![
+                    Interpolation::Linear => [
                         linear_interpolate(colours[i1][0], colours[i2][0], percent),
                         linear_interpolate(colours[i1][1], colours[i2][1], percent),
                         linear_interpolate(colours[i1][2], colours[i2][2], percent),
                     ],
 
-                    Interpolation::Cosine => vec![
+                    Interpolation::Cosine => [
                         cosine_interpolate(colours[i1][0], colours[i2][0], percent),
                         cosine_interpolate(colours[i1][1], colours[i2][1], percent),
                         cosine_interpolate(colours[i1][2], colours[i2][2], percent),
                     ],
 
-                    Interpolation::Cubic => vec![
+                    Interpolation::Cubic => [
                         cubic_interpolate(
                             colours[i0][0],
                             colours[i1][0],
@@ -493,23 +501,36 @@ fn get_colour(escape: &EscapeTime, t: f64, stg: &Settings) -> Vec<f64> {
     }
 }
 
-fn get_pixel(x: u32, y: u32, t: f64, stg: &Settings) -> Vec<u8> {
-    let mut sum: Vec<f64> = vec![0.0, 0.0, 0.0];
+// x and y are start offsets for getting escapes from matrix
+fn aa(x: u32, y: u32, t: f64, stg: &Settings, escapes: &Matrix<EscapeTime>) -> Pixel {
+    let mut sum: Colour = [0.0; 3];
+    for yaa in 0..stg.aa {
+        for xaa in 0..stg.aa {
+            let sample = get_colour(escapes.get((y * stg.aa + yaa) as usize, (x * stg.aa + xaa) as usize).unwrap(), t, &stg);
+            for i in 0..3 {
+                sum[i] += sample[i];
+            }
+        }
+    }
+    for i in 0..3 {
+        sum[i] /= stg.aa_f * stg.aa_f;
+    }
+    sum.map(|x| (x.powf(1.0 / 2.2) * 255.0) as u8)
+}
+
+fn get_pixel(x: u32, y: u32, t: f64, stg: &Settings) -> Pixel {
+    let mut sum: Colour = [0.0; 3];
     let mut rng = thread_rng();
+    let mut escapes: Matrix<EscapeTime> = Matrix::square(stg.aa as usize);
     let x = x as f64;
     let y = y as f64;
-    for _ in 0 .. stg.aa * stg.aa {
-        let c = image_to_complex(x + rng.gen_range(0.0, 1.0), y + rng.gen_range(0.0, 1.0), &stg);
-        let esc = calc_at(&c, stg);
-        let colour = get_colour(&esc, t, stg);
-
-        sum[0] += colour[0];
-        sum[1] += colour[1];
-        sum[2] += colour[2];
+    for yaa in 0..stg.aa {
+        for xaa in 0..stg.aa {
+            let c = image_to_complex(x + xaa as f64 / stg.aa_f, y + yaa as f64 / stg.aa_f, &stg);
+            *escapes.get_mut(xaa as usize, yaa as usize).unwrap() = calc_at(&c, stg);
+        }
     }
-    sum.iter()
-        .map(|x| ((x / stg.aa_f / stg.aa_f).powf(1.0 / 2.2) * 255.0) as u8)
-        .collect()
+    aa(0, 0, t, stg, &escapes)
 }
 
 fn deg_to_rad(deg: f64) -> f64 {
@@ -607,23 +628,7 @@ fn colourize(escapes: &Arc<Matrix<EscapeTime>>, t: f64, stg: &Arc<Settings>, poo
         let escapes = Arc::clone(&escapes);
 
         pool.execute(move || {
-            let mut pix_row: Vec<Pixel> = Vec::with_capacity(width);
-            for x in 0..stg.width {
-                let mut sum: Vec<f64> = vec![0.0, 0.0, 0.0];
-
-                for yaa in 0..stg.aa {
-                    for xaa in 0..stg.aa {
-                        let colour = get_colour(escapes.get((y * stg.aa + yaa) as usize, (x * stg.aa + xaa) as usize).unwrap(), t, &stg);
-                        sum[0] += colour[0];
-                        sum[1] += colour[1];
-                        sum[2] += colour[2];
-                    }
-                }
-
-                pix_row.push(sum.iter().map(|x| ((x / stg.aa_f / stg.aa_f).powf(1.0 / 2.2) * 255.0) as u8).collect::<Pixel>());
-            }
-            let val = (y, pix_row);
-            tx.send(val).unwrap();
+            tx.send((y, (0..stg.width).map(|x| aa(x,y,t,&stg,&escapes)).collect::<Vec<Pixel>>())).unwrap();
         });
     }
 
