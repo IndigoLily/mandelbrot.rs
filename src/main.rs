@@ -7,6 +7,8 @@ use std::{
     io::{ Write, BufRead, BufReader },
     sync::{ mpsc, Arc },
     str::FromStr,
+    path::Path,
+    collections::BTreeMap,
 };
 
 use png::{BitDepth, ColorType, Encoder};
@@ -110,7 +112,7 @@ mod matrix {
 use matrix::Matrix;
 
 #[allow(dead_code)]
-struct Settings {
+struct Renderer {
     width:     usize,
     height:    usize,
     smaller:   usize,
@@ -142,11 +144,13 @@ struct Settings {
     inside:    Colour,
     speed:     f64,
     acc:       f64,
+
+    threads:   usize,
 }
 
-impl Settings {
+impl Renderer {
     fn new() -> Self {
-        Settings {
+        Renderer {
             width       : 640,
             height      : 640,
             smaller     : 640,
@@ -178,6 +182,8 @@ impl Settings {
             inside      : [0.0; 3],
             speed       : 1.0,
             acc         : 1.0,
+
+            threads     : 1,
         }
     }
 
@@ -276,6 +282,104 @@ impl Settings {
         self.start_t = start_t;
         self
     }
+
+    fn threads(&mut self, threads: usize) -> &mut Self {
+        self.threads = threads;
+        self
+    }
+
+    fn render(self) {
+        let rndr = Arc::new(self);
+        match rndr.frames {
+            1 => rndr.render_image(),
+            _ => rndr.render_anim()
+        }
+    }
+
+    fn render_image(self: Arc<Self>) {
+        let file = File::create("mandelbrot.png").expect("Couldn't open file");
+        let mut encoder = Encoder::new(file, self.width as u32, self.height as u32);
+        encoder.set_color(ColorType::RGB);
+        encoder.set_depth(BitDepth::Eight);
+        let mut writer = encoder.write_header().unwrap().into_stream_writer();
+
+        let pool = ThreadPool::new(self.threads);
+        let (tx, rx) = mpsc::channel();
+
+        for y in 0..self.height {
+            let tx = tx.clone();
+            let rndr = self.clone();
+            pool.execute(move || {
+                for x in 0..rndr.width {
+                    let p = get_pixel(x, y, rndr.start_t, &rndr);
+                    tx.send((rndr.width * y + x, p)).unwrap();
+                }
+            });
+        }
+
+        // need to drop original tx, or rx iterator will never end
+        drop(tx);
+
+        let mut count = 0;
+        let mut buffer: BTreeMap<usize, Pixel> = BTreeMap::new();
+        let mut waiting_for = 0;
+        for msg in rx {
+            let (idx, p) = msg;
+
+            if idx == waiting_for {
+                let mut p: &Pixel = &p;
+                loop {
+                    writer.write(p).unwrap();
+                    waiting_for += 1;
+                    if let Some(new_p) = buffer.get(&waiting_for) {
+                        p = new_p;
+                    } else {
+                        break;
+                    }
+                }
+            } else {
+                buffer.insert(idx, p);
+            }
+
+            count += 1;
+            print!("\r{}% rendered", count * 100 / self.width / self.height);
+            std::io::stdout().flush().unwrap();
+        }
+    }
+
+    fn render_anim(self: Arc<Self>) {
+        assert_ne!(self.frames, 1);
+        let pool = ThreadPool::new(self.threads);
+
+        let framepath = Path::new("frames");
+        if framepath.exists() {
+            fs::remove_dir_all(framepath).unwrap();
+        }
+        fs::create_dir(framepath).unwrap();
+
+        let escapes: Arc<Matrix<EscapeTime>> = Arc::new(calc_escapes(&self, &pool));
+
+        for frame in 0..self.frames {
+            // t is in the range [0, 1)
+            let t = frame as f64 / self.frames_f;
+
+            let image_data: Vec<u8> = colourize(&escapes, t, &self, &pool);
+
+            let file = File::create(format!("{}/{}.png", framepath.display(), frame)).expect("Couldn't open file");
+
+            let mut encoder = Encoder::new(file, self.width as u32, self.height as u32);
+            encoder.set_color(ColorType::RGB);
+            encoder.set_depth(BitDepth::Eight);
+
+            let mut writer = encoder.write_header().unwrap();
+            writer
+                .write_image_data(&image_data)
+                .expect("Couldn't write to file");
+
+            print!("\r{}/{} frames", frame + 1, self.frames);
+            std::io::stdout().flush().unwrap();
+        }
+    }
 }
 
 fn env_or_default<T>(name: &str, default: T) -> T
@@ -292,14 +396,14 @@ where
 }
 
 fn main() {
-    let mut stg = Settings::new();
+    let mut rndr = Renderer::new();
 
     {
-        // if env var exists, parse and set stg to that value
+        // if env var exists, parse and set rndr to that value
         macro_rules! setting {
             ($name:ident) => {
                 if let Ok($name) = env::var(stringify!($name)) {
-                    stg.$name($name.parse().unwrap());
+                    rndr.$name($name.parse().unwrap());
                 }
             }
         }
@@ -317,22 +421,23 @@ fn main() {
         setting!(interp);
         setting!(speed);
         setting!(acc);
+        setting!(threads);
 
         // doesn't work with setting! macro because of hex_to_rgb
         if let Ok(inside) = env::var("inside") {
-            stg.inside(hex_to_rgb(inside));
+            rndr.inside(hex_to_rgb(inside));
         }
 
         if let (Ok(x), Ok(y)) = (env::var("center_x"), env::var("center_y")) {
             let x = x.parse().unwrap();
             let y = y.parse().unwrap();
-            stg.center(Complex::new(x,y));
+            rndr.center(Complex::new(x,y));
         }
 
         if let (Ok(x), Ok(y)) = (env::var("ctr_julia_x"), env::var("ctr_julia_y")) {
             let x = x.parse().unwrap();
             let y = y.parse().unwrap();
-            stg.ctr_julia(Complex::new(x,y));
+            rndr.ctr_julia(Complex::new(x,y));
         }
 
         let sin_r     = env_or_default("sin_r", 1.0);
@@ -351,91 +456,18 @@ fn main() {
                 "palette"  => ColourAlgo::Palette(load_palette(env::var("palette").unwrap())),
                 _ => panic!("Couldn't parse clr_algo setting"),
             };
-            stg.clr_algo(clr_algo);
+            rndr.clr_algo(clr_algo);
         }
 
-        assert!(stg.width  >= 1, "Width must be at least 1");
-        assert!(stg.height >= 1, "Height must be at least 1");
-        assert!(stg.frames >= 1, "Frames must be at least 1");
-        assert!(stg.aa     >= 1, "Anti-aliasing level must be at least 1");
-        assert!(stg.bail   >= 20.0, "Bailout must be at least 20");
+        assert!(rndr.width  >= 1, "Width must be at least 1");
+        assert!(rndr.height >= 1, "Height must be at least 1");
+        assert!(rndr.frames >= 1, "Frames must be at least 1");
+        assert!(rndr.aa     >= 1, "Anti-aliasing level must be at least 1");
+        assert!(rndr.bail   >= 20.0, "Bailout must be at least 20");
         assert!((0.0..=1.0).contains(&band_size), "Band size must be between 0 and 1");
     }
 
-    let stg = Arc::new(stg);
-
-    let pool = threadpool::ThreadPool::new(env_or_default("threads", 1));
-
-    if stg.frames > 1 {
-        fs::remove_dir_all("frames").unwrap();
-        fs::create_dir("frames").unwrap();
-
-        let escapes: Arc<Matrix<EscapeTime>> = Arc::new(calc_escapes(&stg, &pool));
-
-        for frame in 0..stg.frames {
-            // t is in the range [0, 1)
-            let t = frame as f64 / stg.frames_f;
-
-            let image_data: Vec<u8> = colourize(&escapes, t, &stg, &pool);
-
-            let file = File::create(if stg.frames == 1 {
-                String::from("mandelbrot.png")
-            } else {
-                format!("frames/{}.png", frame)
-            })
-            .expect("Couldn't open file");
-
-            let mut encoder = Encoder::new(file, stg.width as u32, stg.height as u32);
-            encoder.set_color(ColorType::RGB);
-            encoder.set_depth(BitDepth::Eight);
-
-            let mut writer = encoder.write_header().unwrap();
-            writer
-                .write_image_data(&image_data)
-                .expect("Couldn't write to file");
-
-            print!("\r{}/{} frames", frame + 1, stg.frames);
-            std::io::stdout().flush().unwrap();
-        }
-    } else {
-        let (tx, rx) = mpsc::channel();
-
-        for y in 0..stg.height {
-            for x in 0..stg.width {
-                let tx = tx.clone();
-                let stg = stg.clone();
-                pool.execute(move || {
-                    let p = get_pixel(x, y, stg.start_t, &stg);
-                    tx.send((x, y, p)).unwrap();
-                });
-            }
-        }
-
-        // need to drop original tx, or rx iterator will never end
-        drop(tx);
-
-        let mut image_data: Vec<u8> = vec![0; stg.width * stg.height * 3];
-        let mut count = 0;
-        for msg in rx {
-            let (x, y, p) = msg;
-            let idx = (stg.width * y + x) * 3;
-            image_data[idx + 0] = p[0];
-            image_data[idx + 1] = p[1];
-            image_data[idx + 2] = p[2];
-            count += 1;
-            print!("\r{}% rendered", count * 100 / stg.width / stg.height);
-            std::io::stdout().flush().unwrap();
-        }
-
-        let file = File::create("mandelbrot.png").expect("Couldn't open file");
-        let mut encoder = Encoder::new(file, stg.width as u32, stg.height as u32);
-        encoder.set_color(ColorType::RGB);
-        encoder.set_depth(BitDepth::Eight);
-        let mut writer = encoder.write_header().unwrap();
-        writer
-            .write_image_data(&image_data)
-            .expect("Couldn't write to file");
-    }
+    rndr.render();
 
     println!("\nDone");
 }
@@ -508,11 +540,11 @@ fn load_palette(path: String) -> Vec<Colour> {
     reader.lines().map(|x| hex_to_rgb(x.unwrap())).collect()
 }
 
-fn get_colour(escape: &EscapeTime, t: f64, stg: &Settings) -> Colour {
+fn get_colour(escape: &EscapeTime, t: f64, rndr: &Renderer) -> Colour {
     if let Some(escape) = escape {
-        let escape = escape.powf(stg.acc) * stg.speed;
+        let escape = escape.powf(rndr.acc) * rndr.speed;
 
-        match &stg.clr_algo {
+        match &rndr.clr_algo {
             ColourAlgo::BW => [1.0, 1.0, 1.0],
 
             ColourAlgo::Grey => {
@@ -564,7 +596,7 @@ fn get_colour(escape: &EscapeTime, t: f64, stg: &Settings) -> Colour {
                 let i0 = (i1 + colours.len() - 1) % colours.len();
                 let percent = escape % 1.0;
 
-                match &stg.interp {
+                match &rndr.interp {
                     Interpolation::None => colours[i1],
 
                     Interpolation::Linear => [
@@ -606,38 +638,38 @@ fn get_colour(escape: &EscapeTime, t: f64, stg: &Settings) -> Colour {
             },
         }
     } else {
-        stg.inside
+        rndr.inside
     }
 }
 
 // x and y are start offsets for getting escapes from matrix
-fn calc_aa(x: usize, y: usize, t: f64, stg: &Settings, escapes: &Matrix<EscapeTime>) -> Pixel {
+fn calc_aa(x: usize, y: usize, t: f64, rndr: &Renderer, escapes: &Matrix<EscapeTime>) -> Pixel {
     let mut sum: Colour = [0.0; 3];
-    for yaa in 0..stg.aa {
-        for xaa in 0..stg.aa {
-            let sample = get_colour(escapes.get(x * stg.aa + xaa, y * stg.aa + yaa).unwrap(), t, stg);
+    for yaa in 0..rndr.aa {
+        for xaa in 0..rndr.aa {
+            let sample = get_colour(escapes.get(x * rndr.aa + xaa, y * rndr.aa + yaa).unwrap(), t, rndr);
             for i in 0..3 {
                 sum[i] += sample[i];
             }
         }
     }
     for c in &mut sum {
-        *c /= stg.aa_f * stg.aa_f;
+        *c /= rndr.aa_f * rndr.aa_f;
     }
     sum.map(|x| (x.powf(1.0 / 2.2) * 255.0) as u8)
 }
 
-fn get_pixel(x: usize, y: usize, t: f64, stg: &Settings) -> Pixel {
-    let mut escapes: Matrix<EscapeTime> = Matrix::square(stg.aa);
+fn get_pixel(x: usize, y: usize, t: f64, rndr: &Renderer) -> Pixel {
+    let mut escapes: Matrix<EscapeTime> = Matrix::square(rndr.aa);
     let x = x as f64;
     let y = y as f64;
-    for yaa in 0..stg.aa {
-        for xaa in 0..stg.aa {
-            let c = image_to_complex(x + xaa as f64 / stg.aa_f, y + yaa as f64 / stg.aa_f, stg);
-            *escapes.get_mut(xaa, yaa).unwrap() = calc_at(&c, stg);
+    for yaa in 0..rndr.aa {
+        for xaa in 0..rndr.aa {
+            let c = image_to_complex(x + xaa as f64 / rndr.aa_f, y + yaa as f64 / rndr.aa_f, rndr);
+            *escapes.get_mut(xaa, yaa).unwrap() = calc_at(&c, rndr);
         }
     }
-    calc_aa(0, 0, t, stg, &escapes)
+    calc_aa(0, 0, t, rndr, &escapes)
 }
 
 fn deg_to_rad(deg: f64) -> f64 {
@@ -650,52 +682,52 @@ fn rotate_complex(c: &Complex<f64>, angle: f64, origin: &Complex<f64>) -> Comple
 }
 
 // take a point in image coordinates, and return its location in the complex plane
-fn image_to_complex(x: f64, y: f64, stg: &Settings) -> Complex<f64> {
-    let c = (Complex::new(x, y) - Complex::new(stg.width_f, stg.height_f) / 2.0) / stg.smaller_f * 4.0 / stg.zoom;
-    if stg.julia {
-        rotate_complex(&c, stg.angle, &Complex::new(0.0, 0.0)) + stg.ctr_julia
+fn image_to_complex(x: f64, y: f64, rndr: &Renderer) -> Complex<f64> {
+    let c = (Complex::new(x, y) - Complex::new(rndr.width_f, rndr.height_f) / 2.0) / rndr.smaller_f * 4.0 / rndr.zoom;
+    if rndr.julia {
+        rotate_complex(&c, rndr.angle, &Complex::new(0.0, 0.0)) + rndr.ctr_julia
     } else {
-        c + stg.center
+        c + rndr.center
     }
 }
 
 // calculate the escape time at a point c in the complex plane
 // if c is in the Mandelbrot set, returns None
-fn calc_at(c: &Complex<f64>, stg: &Settings) -> EscapeTime {
+fn calc_at(c: &Complex<f64>, rndr: &Renderer) -> EscapeTime {
     let mut z = c.clone();
     let mut itr = 1;
 
     loop {
-        z = z * z + if stg.julia { &stg.center } else { c };
+        z = z * z + if rndr.julia { &rndr.center } else { c };
 
-        if z.norm_sqr() > stg.bail_sq {
+        if z.norm_sqr() > rndr.bail_sq {
             let itr = itr as f64;
-            return Some(itr - (z.norm().log(E) / stg.bail.log(E)).log(2.0));
+            return Some(itr - (z.norm().log(E) / rndr.bail.log(E)).log(2.0));
         }
 
         itr += 1;
 
-        if itr >= stg.max_itr {
+        if itr >= rndr.max_itr {
             return None;
         }
     }
 }
 
-fn calc_escapes(stg: &Arc<Settings>, pool: &ThreadPool) -> Matrix<EscapeTime> {
+fn calc_escapes(rndr: &Arc<Renderer>, pool: &ThreadPool) -> Matrix<EscapeTime> {
     let (tx, rx) = mpsc::channel();
 
-    let mut escapes: Matrix<EscapeTime> = Matrix::new(stg.width * stg.aa, stg.height * stg.aa);
+    let mut escapes: Matrix<EscapeTime> = Matrix::new(rndr.width * rndr.aa, rndr.height * rndr.aa);
     let width = escapes.width();
 
-    for y in 0 .. stg.height * stg.aa {
+    for y in 0 .. rndr.height * rndr.aa {
         let tx = tx.clone();
-        let stg = Arc::clone(stg);
+        let rndr = Arc::clone(rndr);
 
         pool.execute(move || {
             let mut row: Vec<EscapeTime> = Vec::with_capacity(width);
-            for x in 0 .. stg.width * stg.aa {
-                let c = image_to_complex(x as f64 / stg.aa_f, y as f64 / stg.aa_f, &stg);
-                row.push(calc_at(&c, &stg));
+            for x in 0 .. rndr.width * rndr.aa {
+                let c = image_to_complex(x as f64 / rndr.aa_f, y as f64 / rndr.aa_f, &rndr);
+                row.push(calc_at(&c, &rndr));
             }
             let val = (y, row);
             tx.send(val).unwrap();
@@ -713,7 +745,7 @@ fn calc_escapes(stg: &Arc<Settings>, pool: &ThreadPool) -> Matrix<EscapeTime> {
         }
         count += 1;
 
-        print!("\r{}% calculated", count * 100 / stg.height / stg.aa);
+        print!("\r{}% calculated", count * 100 / rndr.height / rndr.aa);
         std::io::stdout().flush().unwrap();
     }
 
@@ -722,18 +754,18 @@ fn calc_escapes(stg: &Arc<Settings>, pool: &ThreadPool) -> Matrix<EscapeTime> {
     escapes
 }
 
-fn colourize(escapes: &Arc<Matrix<EscapeTime>>, t: f64, stg: &Arc<Settings>, pool: &ThreadPool) -> Vec<u8> {
+fn colourize(escapes: &Arc<Matrix<EscapeTime>>, t: f64, rndr: &Arc<Renderer>, pool: &ThreadPool) -> Vec<u8> {
     let (tx, rx) = mpsc::channel();
 
-    let mut data: Matrix<Pixel> = Matrix::new(stg.width, stg.height);
+    let mut data: Matrix<Pixel> = Matrix::new(rndr.width, rndr.height);
 
-    for y in 0..stg.height {
+    for y in 0..rndr.height {
         let tx = tx.clone();
-        let stg = Arc::clone(stg);
+        let rndr = Arc::clone(rndr);
         let escapes = Arc::clone(escapes);
 
         pool.execute(move || {
-            tx.send((y, (0..stg.width).map(|x| calc_aa(x,y,t,&stg,&escapes)).collect::<Vec<Pixel>>())).unwrap();
+            tx.send((y, (0..rndr.width).map(|x| calc_aa(x,y,t,&rndr,&escapes)).collect::<Vec<Pixel>>())).unwrap();
         });
     }
 
@@ -748,13 +780,13 @@ fn colourize(escapes: &Arc<Matrix<EscapeTime>>, t: f64, stg: &Arc<Settings>, poo
         }
         count += 1;
 
-        if stg.frames == 1 {
-            print!("\r{}% colourized", count * 100 / stg.height);
+        if rndr.frames == 1 {
+            print!("\r{}% colourized", count * 100 / rndr.height);
             std::io::stdout().flush().unwrap();
         }
     }
 
-    if stg.frames == 1 {
+    if rndr.frames == 1 {
         println!();
     }
 
