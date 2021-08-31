@@ -26,6 +26,7 @@ mod matrix {
     pub struct Matrix<T> {
         width: usize,
         height: usize,
+        #[allow(dead_code)]
         area: usize,
         vec: Vec<T>,
     }
@@ -610,7 +611,7 @@ fn get_colour(escape: &EscapeTime, t: f64, stg: &Settings) -> Colour {
 }
 
 // x and y are start offsets for getting escapes from matrix
-fn aa(x: usize, y: usize, t: f64, stg: &Settings, escapes: &Matrix<EscapeTime>) -> Pixel {
+fn calc_aa(x: usize, y: usize, t: f64, stg: &Settings, escapes: &Matrix<EscapeTime>) -> Pixel {
     let mut sum: Colour = [0.0; 3];
     for yaa in 0..stg.aa {
         for xaa in 0..stg.aa {
@@ -636,7 +637,7 @@ fn get_pixel(x: usize, y: usize, t: f64, stg: &Settings) -> Pixel {
             *escapes.get_mut(xaa, yaa).unwrap() = calc_at(&c, stg);
         }
     }
-    aa(0, 0, t, stg, &escapes)
+    calc_aa(0, 0, t, stg, &escapes)
 }
 
 fn deg_to_rad(deg: f64) -> f64 {
@@ -725,7 +726,6 @@ fn colourize(escapes: &Arc<Matrix<EscapeTime>>, t: f64, stg: &Arc<Settings>, poo
     let (tx, rx) = mpsc::channel();
 
     let mut data: Matrix<Pixel> = Matrix::new(stg.width, stg.height);
-    let width = data.width();
 
     for y in 0..stg.height {
         let tx = tx.clone();
@@ -733,7 +733,7 @@ fn colourize(escapes: &Arc<Matrix<EscapeTime>>, t: f64, stg: &Arc<Settings>, poo
         let escapes = Arc::clone(escapes);
 
         pool.execute(move || {
-            tx.send((y, (0..stg.width).map(|x| aa(x,y,t,&stg,&escapes)).collect::<Vec<Pixel>>())).unwrap();
+            tx.send((y, (0..stg.width).map(|x| calc_aa(x,y,t,&stg,&escapes)).collect::<Vec<Pixel>>())).unwrap();
         });
     }
 
