@@ -693,7 +693,7 @@ fn calc_escapes(stg: &Arc<Settings>, pool: &ThreadPool) -> Matrix<EscapeTime> {
         pool.execute(move || {
             let mut row: Vec<EscapeTime> = Vec::with_capacity(width);
             for x in 0 .. stg.width * stg.aa {
-                let c = image_to_complex((x / stg.aa) as f64, (y / stg.aa) as f64, &stg);
+                let c = image_to_complex(x as f64 / stg.aa_f, y as f64 / stg.aa_f, &stg);
                 row.push(calc_at(&c, &stg));
             }
             let val = (y, row);
