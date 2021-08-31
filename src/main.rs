@@ -112,13 +112,13 @@ use matrix::Matrix;
 
 #[allow(dead_code)]
 struct Settings {
-    width:     u32,
-    height:    u32,
-    smaller:   u32,
-    frames:    u32,
+    width:     usize,
+    height:    usize,
+    smaller:   usize,
+    frames:    usize,
 
-    aa:        u32,
-    max_itr:   u32,
+    aa:        usize,
+    max_itr:   usize,
 
     width_f:   f64,
     height_f:  f64,
@@ -127,6 +127,7 @@ struct Settings {
     start_t:   f64,
 
     aa_f:      f64,
+    aa_sq:     f64,
     bail:      f64,
     bail_sq:   f64,
 
@@ -145,38 +146,136 @@ struct Settings {
 }
 
 impl Settings {
-    fn new(
-        width: u32, height: u32, frames: u32, start_t: f64,
-        aa: u32, bail: f64, max_itr: u32,
-        zoom: f64, angle: f64, center_x: f64, center_y: f64,
-        julia: bool, ctr_julia_x: f64, ctr_julia_y: f64, 
-        clr_algo: ColourAlgo, interp: Interpolation, inside: Colour, speed: f64, acc: f64,
-        ) -> Self
-    {
-        let smaller = if width < height { width } else { height };
+    fn new() -> Self {
         Settings {
-            width, height, smaller, frames, start_t,
+            width       : 640,
+            height      : 640,
+            smaller     : 640,
+            frames      : 1,
 
-            aa, max_itr,
+            aa          : 1,
+            max_itr     : 100,
 
-            width_f:   width   as f64,
-            height_f:  height  as f64,
-            smaller_f: smaller as f64,
-            frames_f:  frames  as f64,
+            width_f     : 640.0,
+            height_f    : 640.0,
+            smaller_f   : 640.0,
+            frames_f    : 1.0,
+            start_t     : 0.0,
 
-            aa_f:    aa as f64,
-            bail,
-            bail_sq: bail * bail,
+            aa_f        : 1.0,
+            aa_sq       : 1.0,
+            bail        : 20.0,
+            bail_sq     : 20.0 * 20.0,
 
-            zoom,
-            angle,
-            center: Complex::new(center_x, center_y),
+            zoom        : 1.0,
+            angle       : 0.0,
+            center      : Complex::new(0.0, 0.0),
 
-            julia,
-            ctr_julia: Complex::new(ctr_julia_x, ctr_julia_y),
+            julia       : false,
+            ctr_julia   : Complex::new(0.0, 0.0),
 
-            clr_algo, inside, interp, speed, acc,
+            clr_algo    : ColourAlgo::SineAdd(1.1, 1.2, 1.3),
+            interp      : Interpolation::Cosine,
+            inside      : [0.0; 3],
+            speed       : 1.0,
+            acc         : 1.0,
         }
+    }
+
+    // builder functions
+    fn width(&mut self, width: usize) -> &mut Self {
+        self.width = width;
+        self.width_f = self.width as f64;
+        self.smaller = self.width.min(self.height);
+        self.smaller_f = self.smaller as f64;
+        self
+    }
+
+    fn height(&mut self, height: usize) -> &mut Self {
+        self.height = height;
+        self.height_f = self.height as f64;
+        self.smaller = self.width.min(self.height);
+        self.smaller_f = self.smaller as f64;
+        self
+    }
+
+    fn frames(&mut self, frames: usize) -> &mut Self {
+        self.frames = frames;
+        self.frames_f = self.frames as f64;
+        self
+    }
+
+    fn aa(&mut self, aa: usize) -> &mut Self {
+        self.aa = aa;
+        self.aa_f = self.aa as f64;
+        self.aa_sq = (self.aa * self.aa) as f64;
+        self
+    }
+
+    fn max_itr(&mut self, max_itr: usize) -> &mut Self {
+        self.max_itr = max_itr;
+        self
+    }
+
+    fn zoom(&mut self, zoom: f64) -> &mut Self {
+        self.zoom = zoom;
+        self
+    }
+
+    fn angle(&mut self, angle: f64) -> &mut Self {
+        self.angle = angle;
+        self
+    }
+
+    fn center(&mut self, center: Complex<f64>) -> &mut Self {
+        self.center = center;
+        self
+    }
+
+    fn julia(&mut self, julia: bool) -> &mut Self {
+        self.julia = julia;
+        self
+    }
+
+    fn ctr_julia(&mut self, ctr_julia: Complex<f64>) -> &mut Self {
+        self.ctr_julia = ctr_julia;
+        self
+    }
+
+    fn clr_algo(&mut self, clr_algo: ColourAlgo) -> &mut Self {
+        self.clr_algo = clr_algo;
+        self
+    }
+
+    fn interp(&mut self, interp: Interpolation) -> &mut Self {
+        self.interp = interp;
+        self
+    }
+
+    fn inside(&mut self, inside: Colour) -> &mut Self {
+        self.inside = inside;
+        self
+    }
+
+    fn speed(&mut self, speed: f64) -> &mut Self {
+        self.speed = speed;
+        self
+    }
+
+    fn acc(&mut self, acc: f64) -> &mut Self {
+        self.acc = acc;
+        self
+    }
+
+    fn bail(&mut self, bail: f64) -> &mut Self {
+        self.bail = bail;
+        self.bail_sq = self.bail * self.bail;
+        self
+    }
+
+    fn start_t(&mut self, start_t: f64) -> &mut Self {
+        self.start_t = start_t;
+        self
     }
 }
 
@@ -194,66 +293,76 @@ where
 }
 
 fn main() {
-    let stg = {
-        let width       = env_or_default("width", 640);
-        let height      = env_or_default("height", 640);
-        let frames      = env_or_default("frames", 1);
-        let start_t     = env_or_default("start", 0.0);
+    let mut stg = Settings::new();
 
-        let aa          = env_or_default("aa", 1);
-        let bail        = env_or_default("bail", 20.0);
-        let max_itr     = env_or_default("itr", 100);
+    {
+        macro_rules! setting {
+            ($name:ident) => {
+                if let Ok($name) = env::var(stringify!($name)) {
+                    stg.$name($name.parse().unwrap());
+                }
+            }
+        }
 
-        let zoom        = env_or_default("zoom", 1.0);
-        let angle       = env_or_default("angle", 0.0);
-        let center_x    = env_or_default("center_x", 0.0);
-        let center_y    = env_or_default("center_y", 0.0);
+        setting!(width);
+        setting!(height);
+        setting!(frames);
+        setting!(start_t);
+        setting!(aa);
+        setting!(bail);
+        setting!(max_itr);
+        setting!(zoom);
+        setting!(angle);
+        setting!(julia);
+        setting!(interp);
+        setting!(speed);
+        setting!(acc);
 
-        let julia       = env_or_default("julia", false);
-        let ctr_julia_x = env_or_default("ctr_julia_x", 0.0);
-        let ctr_julia_y = env_or_default("ctr_julia_y", 0.0);
+        // doesn't work with setting! macro because of hex_to_rgb
+        if let Ok(inside) = env::var("inside") {
+            stg.inside(hex_to_rgb(inside));
+        }
 
-        let inside      = hex_to_rgb(env_or_default("inside", "000000".to_string()));
-        let interp      = env_or_default("interp", Interpolation::Cosine);
-        let speed       = env_or_default("speed", 1.0);
-        let acc         = env_or_default("acc", 1.0);
+        if let (Ok(x), Ok(y)) = (env::var("center_x"), env::var("center_y")) {
+            let x = x.parse().unwrap();
+            let y = y.parse().unwrap();
+            stg.center(Complex::new(x,y));
+        }
 
-        let sin_r       = env_or_default("sin_r", 1.0);
-        let sin_g       = env_or_default("sin_g", 1.0);
-        let sin_b       = env_or_default("sin_b", 1.0);
-        let band_size   = env_or_default("band_size", 0.5);
+        if let (Ok(x), Ok(y)) = (env::var("ctr_julia_x"), env::var("ctr_julia_y")) {
+            let x = x.parse().unwrap();
+            let y = y.parse().unwrap();
+            stg.ctr_julia(Complex::new(x,y));
+        }
 
-        let clr_algo = match env::var("clr_algo") {
-            Ok(val) => match val.to_lowercase().as_str() {
-                "bw"        => ColourAlgo::BW,
-                "grey"      => ColourAlgo::Grey,
-                "rgb"       => ColourAlgo::RGB,
-                "bands"     => ColourAlgo::Bands(band_size),
-                "sin_mult"  => ColourAlgo::SineMult(sin_r, sin_g, sin_b),
-                "sin_add"   => ColourAlgo::SineAdd(sin_r, sin_g, sin_b),
-                "palette"   => ColourAlgo::Palette(load_palette(env::var("palette").unwrap())),
+        let sin_r     = env_or_default("sin_r", 1.0);
+        let sin_g     = env_or_default("sin_g", 1.0);
+        let sin_b     = env_or_default("sin_b", 1.0);
+        let band_size = env_or_default("band_size", 0.5);
+
+        if let Ok(clr_algo) = env::var("clr_algo") {
+            let clr_algo = match clr_algo.to_lowercase().as_str() {
+                "bw"       => ColourAlgo::BW,
+                "grey"     => ColourAlgo::Grey,
+                "rgb"      => ColourAlgo::RGB,
+                "bands"    => ColourAlgo::Bands(band_size),
+                "sin_mult" => ColourAlgo::SineMult(sin_r, sin_g, sin_b),
+                "sin_add"  => ColourAlgo::SineAdd(sin_r, sin_g, sin_b),
+                "palette"  => ColourAlgo::Palette(load_palette(env::var("palette").unwrap())),
                 _ => panic!("Couldn't parse clr_algo setting"),
-            },
-            Err(_) => ColourAlgo::SineAdd(1.1, 1.2, 1.3),
-        };
+            };
+            stg.clr_algo(clr_algo);
+        }
 
-        assert!(width  >= 1, "Width must be at least 1");
-        assert!(height >= 1, "Height must be at least 1");
-        assert!(frames >= 1, "Frames must be at least 1");
-        assert!(aa     >= 1, "Anti-aliasing level must be at least 1");
-        assert!(bail   >= 20.0, "Bailout must be at least 20");
+        assert!(stg.width  >= 1, "Width must be at least 1");
+        assert!(stg.height >= 1, "Height must be at least 1");
+        assert!(stg.frames >= 1, "Frames must be at least 1");
+        assert!(stg.aa     >= 1, "Anti-aliasing level must be at least 1");
+        assert!(stg.bail   >= 20.0, "Bailout must be at least 20");
         assert!(0.0 <= band_size && band_size <= 1.0, "Band size must be between 0 and 1");
+    }
 
-        Arc::new(
-            Settings::new(
-                width, height, frames, start_t,
-                aa, bail, max_itr,
-                zoom, angle, center_x, center_y,
-                julia, ctr_julia_x, ctr_julia_y,
-                clr_algo, interp, inside, speed, acc,
-            )
-        )
-    };
+    let stg = Arc::new(stg);
 
     let pool = threadpool::ThreadPool::new(env_or_default("threads", 1));
 
@@ -276,7 +385,7 @@ fn main() {
             })
             .expect("Couldn't open file");
 
-            let mut encoder = Encoder::new(file, stg.width, stg.height);
+            let mut encoder = Encoder::new(file, stg.width as u32, stg.height as u32);
             encoder.set_color(ColorType::RGB);
             encoder.set_depth(BitDepth::Eight);
 
@@ -305,11 +414,11 @@ fn main() {
         // need to drop original tx, or rx iterator will never end
         drop(tx);
 
-        let mut image_data: Vec<u8> = vec![0; (stg.width * stg.height * 3) as usize];
+        let mut image_data: Vec<u8> = vec![0; stg.width * stg.height * 3];
         let mut count = 0;
         for msg in rx {
             let (x, y, p) = msg;
-            let idx = ((stg.width * y + x) * 3) as usize;
+            let idx = (stg.width * y + x) * 3;
             image_data[idx + 0] = p[0];
             image_data[idx + 1] = p[1];
             image_data[idx + 2] = p[2];
@@ -319,7 +428,7 @@ fn main() {
         }
 
         let file = File::create("mandelbrot.png").expect("Couldn't open file");
-        let mut encoder = Encoder::new(file, stg.width, stg.height);
+        let mut encoder = Encoder::new(file, stg.width as u32, stg.height as u32);
         encoder.set_color(ColorType::RGB);
         encoder.set_depth(BitDepth::Eight);
         let mut writer = encoder.write_header().unwrap();
@@ -502,11 +611,11 @@ fn get_colour(escape: &EscapeTime, t: f64, stg: &Settings) -> Colour {
 }
 
 // x and y are start offsets for getting escapes from matrix
-fn aa(x: u32, y: u32, t: f64, stg: &Settings, escapes: &Matrix<EscapeTime>) -> Pixel {
+fn aa(x: usize, y: usize, t: f64, stg: &Settings, escapes: &Matrix<EscapeTime>) -> Pixel {
     let mut sum: Colour = [0.0; 3];
     for yaa in 0..stg.aa {
         for xaa in 0..stg.aa {
-            let sample = get_colour(escapes.get((y * stg.aa + yaa) as usize, (x * stg.aa + xaa) as usize).unwrap(), t, &stg);
+            let sample = get_colour(escapes.get(y * stg.aa + yaa, x * stg.aa + xaa).unwrap(), t, &stg);
             for i in 0..3 {
                 sum[i] += sample[i];
             }
@@ -518,16 +627,14 @@ fn aa(x: u32, y: u32, t: f64, stg: &Settings, escapes: &Matrix<EscapeTime>) -> P
     sum.map(|x| (x.powf(1.0 / 2.2) * 255.0) as u8)
 }
 
-fn get_pixel(x: u32, y: u32, t: f64, stg: &Settings) -> Pixel {
-    let mut sum: Colour = [0.0; 3];
-    let mut rng = thread_rng();
-    let mut escapes: Matrix<EscapeTime> = Matrix::square(stg.aa as usize);
+fn get_pixel(x: usize, y: usize, t: f64, stg: &Settings) -> Pixel {
+    let mut escapes: Matrix<EscapeTime> = Matrix::square(stg.aa);
     let x = x as f64;
     let y = y as f64;
     for yaa in 0..stg.aa {
         for xaa in 0..stg.aa {
             let c = image_to_complex(x + xaa as f64 / stg.aa_f, y + yaa as f64 / stg.aa_f, &stg);
-            *escapes.get_mut(xaa as usize, yaa as usize).unwrap() = calc_at(&c, stg);
+            *escapes.get_mut(xaa, yaa).unwrap() = calc_at(&c, stg);
         }
     }
     aa(0, 0, t, stg, &escapes)
@@ -577,7 +684,7 @@ fn calc_at(c: &Complex<f64>, stg: &Settings) -> EscapeTime {
 fn calc_escapes(stg: &Arc<Settings>, pool: &ThreadPool) -> Matrix<EscapeTime> {
     let (tx, rx) = mpsc::channel();
 
-    let mut escapes: Matrix<EscapeTime> = Matrix::new((stg.width * stg.aa) as usize, (stg.height * stg.aa) as usize);
+    let mut escapes: Matrix<EscapeTime> = Matrix::new(stg.width * stg.aa, stg.height * stg.aa);
     let width = escapes.width();
 
     for y in 0 .. stg.height * stg.aa {
@@ -603,7 +710,7 @@ fn calc_escapes(stg: &Arc<Settings>, pool: &ThreadPool) -> Matrix<EscapeTime> {
     for msg in rx {
         let (y, row) = msg;
         for (x, esc) in row.iter().enumerate() {
-            *escapes.get_mut(x as usize, y as usize).unwrap() = *esc;
+            *escapes.get_mut(x, y).unwrap() = *esc;
         }
         count += 1;
 
@@ -619,7 +726,7 @@ fn calc_escapes(stg: &Arc<Settings>, pool: &ThreadPool) -> Matrix<EscapeTime> {
 fn colourize(escapes: &Arc<Matrix<EscapeTime>>, t: f64, stg: &Arc<Settings>, pool: &ThreadPool) -> Vec<u8> {
     let (tx, rx) = mpsc::channel();
 
-    let mut data: Matrix<Pixel> = Matrix::new(stg.width as usize, stg.height as usize);
+    let mut data: Matrix<Pixel> = Matrix::new(stg.width, stg.height);
     let width = data.width();
 
     for y in 0..stg.height {
@@ -639,7 +746,7 @@ fn colourize(escapes: &Arc<Matrix<EscapeTime>>, t: f64, stg: &Arc<Settings>, poo
     for msg in rx {
         let (y, row) = msg;
         for (x, pix) in row.into_iter().enumerate() {
-            *data.get_mut(x as usize, y as usize).unwrap() = pix;
+            *data.get_mut(x, y).unwrap() = pix;
         }
         count += 1;
 
