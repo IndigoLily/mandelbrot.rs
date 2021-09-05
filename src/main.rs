@@ -1,5 +1,3 @@
-#![feature(array_map)]
-
 use std::{
     env,
     fmt::Debug,
@@ -656,7 +654,11 @@ fn calc_aa(x: usize, y: usize, t: f64, rndr: &Renderer, escapes: &Matrix<EscapeT
     for c in &mut sum {
         *c /= rndr.aa_f * rndr.aa_f;
     }
-    sum.map(|x| (x.powf(1.0 / 2.2) * 255.0) as u8)
+    let mut pix: Pixel = Default::default();
+    for (pix_c, sum_c) in pix.iter_mut().zip(sum.iter()) {
+        *pix_c = (sum_c.powf(1.0 / 2.2) * 255.0) as u8;
+    }
+    pix
 }
 
 fn get_pixel(x: usize, y: usize, t: f64, rndr: &Renderer) -> Pixel {
