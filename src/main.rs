@@ -12,6 +12,7 @@ use png::{BitDepth, ColorType, Encoder};
 use num::Complex;
 use threadpool::ThreadPool;
 use crossbeam::channel::{ self, Sender, Receiver };
+use crossbeam::sync::{ Parker, Unparker };
 
 use std::f64::consts::E;
 use std::f64::consts::TAU;
@@ -303,52 +304,42 @@ impl Renderer {
     }
 
     fn render_image(self: Arc<Self>) {
-        /*
-        let file = File::create("mandelbrot.png").expect("Couldn't open file");
-        let mut encoder = Encoder::new(file, self.width as u32, self.height as u32);
-        encoder.set_color(ColorType::RGB);
-        encoder.set_depth(BitDepth::Eight);
-        let mut writer = std::io::BufWriter::with_capacity(1024 * 1024 /*1MiB*/, encoder.write_header().unwrap().into_stream_writer());
-        */
         let mut writer = self.create_png_writer("mandelbrot.png");
 
         let height_range = 0..self.height;
 
         type Row = Vec<u8>;
 
-        let (ping_scs,  ping_rcs):  (Vec<Sender<()>>,    Vec<Receiver<()>>)    = height_range.clone().map(|_| channel::unbounded()).unzip();
+        let mut parkers: Vec<Parker> = height_range.clone().map(|_| Parker::new()).collect();
+        let mut unparkers: Vec<Unparker> = parkers.iter().map(|p| p.unparker().clone()).collect();
         let (pixel_scs, pixel_rcs): (Vec<Sender<Row>>, Vec<Receiver<Row>>) = height_range.clone().map(|_| channel::unbounded()).unzip();
 
         for y in height_range.clone() {
             let sc: Sender<Row> = pixel_scs[y].clone();
-            let rc: Receiver<()>  = ping_rcs[y].clone();
             let rndr = self.clone();
+            let p = parkers.pop().unwrap();
             std::thread::spawn(move || {
-                rc.recv().unwrap(); // wait until first ping
+                p.park();
                 let row: Row = (0..rndr.width).map(|x| IntoIterator::into_iter(get_pixel(x, y, rndr.start_t, &rndr))).flatten().collect();
-                rc.recv().unwrap();
                 sc.send(row).unwrap();
             });
         }
 
-        let mut pinged = 0;
         for _ in 0..self.threads {
             // start self.threads amount of threads
-            ping_scs[pinged].send(()).unwrap();
-            pinged += 1;
+            if let Some(u) = unparkers.pop() {
+                u.unpark();
+            }
         }
 
         let mut count = 0;
         for i in height_range.clone() {
-            let sc: Sender<()>    = ping_scs[i].clone();
             let rc: Receiver<Row> = pixel_rcs[i].clone();
 
-            sc.send(()).unwrap();
             let p = rc.recv().unwrap();
 
-            if pinged < self.height {
-                ping_scs[pinged].send(()).unwrap();
-                pinged += 1;
+            if let Some(u) = unparkers.pop() {
+                u.unpark();
             }
 
             writer.write(&p).unwrap();
