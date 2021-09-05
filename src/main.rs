@@ -299,7 +299,7 @@ impl Renderer {
         let mut encoder = Encoder::new(file, self.width as u32, self.height as u32);
         encoder.set_color(ColorType::RGB);
         encoder.set_depth(BitDepth::Eight);
-        let mut writer = encoder.write_header().unwrap().into_stream_writer();
+        let mut writer = std::io::BufWriter::with_capacity(1024 * 1024 /*1MiB*/, encoder.write_header().unwrap().into_stream_writer());
 
         let pool = ThreadPool::new(self.threads);
         let (tx, rx) = mpsc::channel();
