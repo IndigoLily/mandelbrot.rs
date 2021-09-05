@@ -2,16 +2,16 @@ use std::{
     env,
     fmt::Debug,
     fs::{ self, File },
-    io::{ Write, BufRead, BufReader },
-    sync::{ mpsc, Arc },
+    io::{ Write, BufRead, BufReader, BufWriter },
+    sync::Arc,
     str::FromStr,
     path::Path,
-    collections::BTreeMap,
 };
 
 use png::{BitDepth, ColorType, Encoder};
 use num::Complex;
 use threadpool::ThreadPool;
+use crossbeam::channel::{ self, Sender, Receiver };
 
 use std::f64::consts::E;
 use std::f64::consts::TAU;
@@ -286,6 +286,14 @@ impl Renderer {
         self
     }
 
+    fn create_png_writer(&self, filename: &str) -> BufWriter<png::StreamWriter<File>> {
+        let file = File::create(filename).expect("Couldn't open file");
+        let mut encoder = Encoder::new(file, self.width as u32, self.height as u32);
+        encoder.set_color(ColorType::RGB);
+        encoder.set_depth(BitDepth::Eight);
+        BufWriter::with_capacity(1024 * 1024 /*1MiB*/, encoder.write_header().unwrap().into_stream_writer())
+    }
+
     fn render(self) {
         let rndr = Arc::new(self);
         match rndr.frames {
@@ -295,52 +303,58 @@ impl Renderer {
     }
 
     fn render_image(self: Arc<Self>) {
+        /*
         let file = File::create("mandelbrot.png").expect("Couldn't open file");
         let mut encoder = Encoder::new(file, self.width as u32, self.height as u32);
         encoder.set_color(ColorType::RGB);
         encoder.set_depth(BitDepth::Eight);
         let mut writer = std::io::BufWriter::with_capacity(1024 * 1024 /*1MiB*/, encoder.write_header().unwrap().into_stream_writer());
+        */
+        let mut writer = self.create_png_writer("mandelbrot.png");
 
-        let pool = ThreadPool::new(self.threads);
-        let (tx, rx) = mpsc::channel();
+        let height_range = 0..self.height;
 
-        for y in 0..self.height {
-            let tx = tx.clone();
+        type Row = Vec<u8>;
+
+        let (ping_scs,  ping_rcs):  (Vec<Sender<()>>,    Vec<Receiver<()>>)    = height_range.clone().map(|_| channel::unbounded()).unzip();
+        let (pixel_scs, pixel_rcs): (Vec<Sender<Row>>, Vec<Receiver<Row>>) = height_range.clone().map(|_| channel::unbounded()).unzip();
+
+        for y in height_range.clone() {
+            let sc: Sender<Row> = pixel_scs[y].clone();
+            let rc: Receiver<()>  = ping_rcs[y].clone();
             let rndr = self.clone();
-            pool.execute(move || {
-                for x in 0..rndr.width {
-                    let p = get_pixel(x, y, rndr.start_t, &rndr);
-                    tx.send((rndr.width * y + x, p)).unwrap();
-                }
+            std::thread::spawn(move || {
+                rc.recv().unwrap(); // wait until first ping
+                let row: Row = (0..rndr.width).map(|x| IntoIterator::into_iter(get_pixel(x, y, rndr.start_t, &rndr))).flatten().collect();
+                rc.recv().unwrap();
+                sc.send(row).unwrap();
             });
         }
 
-        // need to drop original tx, or rx iterator will never end
-        drop(tx);
+        let mut pinged = 0;
+        for _ in 0..self.threads {
+            // start self.threads amount of threads
+            ping_scs[pinged].send(()).unwrap();
+            pinged += 1;
+        }
 
         let mut count = 0;
-        let mut buffer: BTreeMap<usize, Pixel> = BTreeMap::new();
-        let mut waiting_for = 0;
-        for msg in rx {
-            let (idx, p) = msg;
+        for i in height_range.clone() {
+            let sc: Sender<()>    = ping_scs[i].clone();
+            let rc: Receiver<Row> = pixel_rcs[i].clone();
 
-            if idx == waiting_for {
-                let mut p: &Pixel = &p;
-                loop {
-                    count += 1;
-                    writer.write(p).unwrap();
-                    waiting_for += 1;
-                    if let Some(new_p) = buffer.get(&waiting_for) {
-                        p = new_p;
-                    } else {
-                        break;
-                    }
-                }
-            } else {
-                buffer.insert(idx, p);
+            sc.send(()).unwrap();
+            let p = rc.recv().unwrap();
+
+            if pinged < self.height {
+                ping_scs[pinged].send(()).unwrap();
+                pinged += 1;
             }
 
-            print!("\r{}% rendered", count * 100 / self.width / self.height);
+            writer.write(&p).unwrap();
+
+            count += 1;
+            print!("\r{}% rendered", count * 100 / self.height);
             std::io::stdout().flush().unwrap();
         }
     }
@@ -716,7 +730,7 @@ fn calc_at(c: &Complex<f64>, rndr: &Renderer) -> EscapeTime {
 }
 
 fn calc_escapes(rndr: &Arc<Renderer>, pool: &ThreadPool) -> Matrix<EscapeTime> {
-    let (tx, rx) = mpsc::channel();
+    let (tx, rx) = channel::unbounded();
 
     let mut escapes: Matrix<EscapeTime> = Matrix::new(rndr.width * rndr.aa, rndr.height * rndr.aa);
     let width = escapes.width();
@@ -757,7 +771,7 @@ fn calc_escapes(rndr: &Arc<Renderer>, pool: &ThreadPool) -> Matrix<EscapeTime> {
 }
 
 fn colourize(escapes: &Arc<Matrix<EscapeTime>>, t: f64, rndr: &Arc<Renderer>, pool: &ThreadPool) -> Vec<u8> {
-    let (tx, rx) = mpsc::channel();
+    let (tx, rx) = channel::unbounded();
 
     let mut data: Matrix<Pixel> = Matrix::new(rndr.width, rndr.height);
 
