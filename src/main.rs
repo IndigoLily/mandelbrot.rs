@@ -329,6 +329,7 @@ impl Renderer {
             if idx == waiting_for {
                 let mut p: &Pixel = &p;
                 loop {
+                    count += 1;
                     writer.write(p).unwrap();
                     waiting_for += 1;
                     if let Some(new_p) = buffer.get(&waiting_for) {
@@ -341,7 +342,6 @@ impl Renderer {
                 buffer.insert(idx, p);
             }
 
-            count += 1;
             print!("\r{}% rendered", count * 100 / self.width / self.height);
             std::io::stdout().flush().unwrap();
         }
