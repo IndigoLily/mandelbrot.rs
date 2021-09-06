@@ -1,3 +1,8 @@
+extern crate jemallocator;
+
+#[global_allocator]
+static ALLOC: jemallocator::Jemalloc = jemallocator::Jemalloc;
+
 use std::{
     env,
     fmt::Debug,
@@ -289,9 +294,9 @@ impl Renderer {
     fn create_png_writer(&self, filename: &str) -> BufWriter<png::StreamWriter<File>> {
         let file = File::create(filename).expect("Couldn't open file");
         let mut encoder = Encoder::new(file, self.width as u32, self.height as u32);
-        encoder.set_color(ColorType::RGB);
+        encoder.set_color(ColorType::Rgb);
         encoder.set_depth(BitDepth::Eight);
-        BufWriter::with_capacity(1024 * 1024 /*1MiB*/, encoder.write_header().unwrap().into_stream_writer())
+        BufWriter::with_capacity(1024 * 1024 /*1MiB*/, encoder.write_header().unwrap().into_stream_writer().unwrap())
     }
 
     fn render(self) {
@@ -302,49 +307,58 @@ impl Renderer {
         }
     }
 
-    fn render_image(self: Arc<Self>) {
+    fn render_image(self: &Arc<Self>) {
         let mut writer = self.create_png_writer("mandelbrot.png");
-
-        let height_range = 0..self.height;
 
         type Row = Vec<Pixel>;
 
-        let mut handles: Vec<JoinHandle<Row>> = Vec::with_capacity(self.height);
+        let area = self.width * self.height;
 
-        for y in height_range.clone() {
+        let mut handles: Vec<Option<JoinHandle<Row>>> = Vec::with_capacity(area);
+
+        let chunk_size = self.width_f.hypot(self.height_f) as usize;
+
+        for i in (0..area).step_by(chunk_size) {
             let rndr = self.clone();
-            handles.push(spawn(move || {
+            handles.push(Some(spawn(move || {
                 thread::park();
-                (0..rndr.width).map(|x| get_pixel(x, y, rndr.start_t, &rndr)).collect()
-            }));
+                (i..).take(chunk_size).map(|i| {
+                    get_pixel(i % rndr.width, i / rndr.width, rndr.start_t, &rndr)
+                }).collect()
+            })));
+        }
+
+        macro_rules! unpark {
+            ($idx:expr) => {
+                if let Some(Some(h)) = handles.get($idx) {
+                    h.thread().unpark()
+                }
+            }
         }
 
         for t in 0..self.threads {
-            if t < handles.len() {
-                handles[t].thread().unpark();
-            }
+            unpark!(t);
         }
 
-        for y in height_range {
-            let row = handles.remove(0).join().unwrap();
+        for i in 0..handles.len() {
+            let row: Row = handles[i].take().unwrap().join().unwrap();
 
-            let i = self.threads - 1;
-            if i < handles.len() {
-                handles[i].thread().unpark();
-            }
+            unpark!(i + self.threads);
 
             for p in row {
                 writer.write(&p).unwrap();
             }
 
-            print!("\r{}% rendered", (y+1) * 100 / self.height);
+            print!("\r{}% rendered", (i+1) * 100 / handles.len());
             std::io::stdout().flush().unwrap();
         }
     }
 
-    fn render_anim(self: Arc<Self>) {
+    fn render_anim(self: &Arc<Self>) {
         assert_ne!(self.frames, 1);
         let pool = ThreadPool::new(self.threads);
+
+        //type Row = Vec<Pixel>;
 
         let framepath = Path::new("frames");
         if framepath.exists() {
