@@ -11,12 +11,11 @@ use std::{
     sync::Arc,
     str::FromStr,
     path::Path,
-    thread::{ self, spawn, JoinHandle },
+    thread::{ self, JoinHandle },
 };
 
 use png::{BitDepth, ColorType, Encoder};
 use num::Complex;
-use threadpool::ThreadPool;
 
 use std::f64::consts::E;
 use std::f64::consts::TAU;
@@ -25,7 +24,11 @@ use std::f64::consts::PI;
 type Pixel = [u8; 3];
 type Colour = [f64; 3];
 
+const BLACK: Colour = [0.0; 3];
+
 type EscapeTime = Option<f64>;
+
+const FRAMEDIR: &str = "frames";
 
 fn deg_to_rad(deg: f64) -> f64 {
     deg / 360.0 * TAU
@@ -191,7 +194,7 @@ impl Renderer {
 
             clr_algo    : ColourAlgo::SineAdd(1.1, 1.2, 1.3),
             interp      : Interpolation::Cosine,
-            inside      : [0.0; 3],
+            inside      : BLACK,
             speed       : 1.0,
             acc         : 1.0,
 
@@ -436,7 +439,7 @@ impl Renderer {
 
     // x and y are start offsets for getting escapes from matrix
     fn calc_aa(&self, x: usize, y: usize, t: f64, escapes: &Matrix<EscapeTime>) -> Pixel {
-        let mut sum: Colour = [0.0; 3];
+        let mut sum: Colour = BLACK;
         for yaa in 0..self.aa {
             for xaa in 0..self.aa {
                 let sample = self.get_colour(escapes.get(x * self.aa + xaa, y * self.aa + yaa).unwrap(), t);
@@ -453,86 +456,6 @@ impl Renderer {
             *pix_c = (sum_c.powf(1.0 / 2.2) * 255.0) as u8;
         }
         pix
-    }
-
-    fn calc_escapes(self: &Arc<Self>, pool: &ThreadPool) -> Matrix<EscapeTime> {
-        let (tx, rx) = std::sync::mpsc::channel();
-
-        let mut escapes: Matrix<EscapeTime> = Matrix::new(self.width * self.aa, self.height * self.aa);
-        let width = escapes.width();
-
-        for y in 0 .. self.height * self.aa {
-            let tx = tx.clone();
-            let rndr = Arc::clone(self);
-
-            pool.execute(move || {
-                let mut row: Vec<EscapeTime> = Vec::with_capacity(width);
-                for x in 0 .. rndr.width * rndr.aa {
-                    let c = rndr.image_to_complex(x as f64 / rndr.aa_f, y as f64 / rndr.aa_f);
-                    row.push(rndr.calc_at(&c));
-                }
-                let val = (y, row);
-                tx.send(val).unwrap();
-            });
-        }
-
-        // need to drop original tx, or rx iterator will never end
-        drop(tx);
-
-        let mut count = 0;
-        for msg in rx {
-            let (y, row) = msg;
-            for (x, esc) in row.iter().enumerate() {
-                *escapes.get_mut(x, y).unwrap() = *esc;
-            }
-            count += 1;
-
-            print!("\r{}% calculated", count * 100 / self.height / self.aa);
-            std::io::stdout().flush().unwrap();
-        }
-
-        println!();
-
-        escapes
-    }
-
-    fn colourize(self: &Arc<Self>, escapes: &Arc<Matrix<EscapeTime>>, t: f64, pool: &ThreadPool) -> Vec<u8> {
-        let (tx, rx) = std::sync::mpsc::channel();
-
-        let mut data: Matrix<Pixel> = Matrix::new(self.width, self.height);
-
-        for y in 0..self.height {
-            let tx = tx.clone();
-            let rndr = Arc::clone(self);
-            let escapes = Arc::clone(escapes);
-
-            pool.execute(move || {
-                tx.send((y, (0..rndr.width).map(|x| rndr.calc_aa(x,y,t,&escapes)).collect::<Vec<Pixel>>())).unwrap();
-            });
-        }
-
-        // need to drop original tx, or rx iterator will never end
-        drop(tx);
-
-        let mut count = 0;
-        for msg in rx {
-            let (y, row) = msg;
-            for (x, pix) in row.into_iter().enumerate() {
-                *data.get_mut(x, y).unwrap() = pix;
-            }
-            count += 1;
-
-            if self.frames == 1 {
-                print!("\r{}% colourized", count * 100 / self.height);
-                std::io::stdout().flush().unwrap();
-            }
-        }
-
-        if self.frames == 1 {
-            println!();
-        }
-
-        Vec::from(data).into_iter().flatten().collect()
     }
 
     fn get_pixel(&self, x: usize, y: usize, t: f64) -> Pixel {
@@ -557,85 +480,72 @@ impl Renderer {
     }
 
     fn render(self) {
-        let rndr = Arc::new(self);
-        match rndr.frames {
-            1 => rndr.render_image(),
-            _ => rndr.render_anim()
-        }
+        Arc::new(self).render_arc();
     }
 
-    fn render_image(self: &Arc<Self>) {
-        let mut writer = self.create_png_writer("mandelbrot.png");
+    fn render_arc(self: &Arc<Self>) {
+        let anim = self.frames != 1;
+        let frame_area = self.width * self.height;
+        let total_area = frame_area * if anim { self.frames } else { 1 };
+
+        if anim {
+            let framepath = Path::new("frames");
+            if framepath.exists() {
+                fs::remove_dir_all(framepath).unwrap();
+            }
+            fs::create_dir(framepath).unwrap();
+        }
+
+        let mut writers: Vec<_> = if anim {
+            (0..self.frames).map(|frame| {
+                let name = &format!("{}/{}.png", FRAMEDIR, frame);
+                self.create_png_writer(name)
+            }).collect()
+        } else {
+            vec![self.create_png_writer("mandelbrot.png")]
+        };
 
         type Row = Vec<Pixel>;
 
-        let area = self.width * self.height;
+        let mut handles: Vec<Option<JoinHandle<Row>>> = Vec::with_capacity(self.threads * self.height * self.frames);
+        let mut closures: Vec<Option<_>> = Vec::with_capacity(handles.capacity());
 
-        let mut handles: Vec<Option<JoinHandle<Row>>> = Vec::with_capacity(area);
-
-        let chunk_size = self.width_f.hypot(self.height_f) as usize;
-
-        for i in (0..area).step_by(chunk_size) {
+        for i in (0..total_area).step_by(self.width) {
             let rndr = self.clone();
-            handles.push(Some(spawn(move || {
-                thread::park();
-                (i..).take(chunk_size).map(|i| {
-                    rndr.get_pixel(i % rndr.width, i / rndr.width, rndr.start_t)
+            closures.push(Some(move || -> Row {
+                (i..).take(rndr.width).map(|i| {
+                    rndr.get_pixel(i % rndr.width, (i % frame_area) / rndr.width, (i / frame_area) as f64 / rndr.frames_f)
                 }).collect()
-            })));
+            }));
         }
 
-        macro_rules! unpark {
+        macro_rules! start {
             ($idx:expr) => {
-                if let Some(Some(h)) = handles.get($idx) {
-                    h.thread().unpark()
+                if let Some(closure) = closures.get_mut($idx) {
+                    let closure = closure.take().unwrap();
+                    handles.push(Some(thread::spawn(closure)));
                 }
             }
         }
 
         for t in 0..self.threads {
-            unpark!(t);
+            start!(t);
         }
 
-        for i in 0..handles.len() {
-            let row: Row = handles[i].take().unwrap().join().unwrap();
+        for (frame, w) in writers.iter_mut().enumerate() {
+            for y in 0..self.height {
+                let i = frame * self.height + y;
+                let row: Row = handles[i].take().unwrap().join().unwrap();
 
-            unpark!(i + self.threads);
+                start!(i + self.threads);
 
-            for p in row {
-                writer.write(&p).unwrap();
+                for p in row {
+                    w.write_all(&p).unwrap();
+                }
+
+                print!("\rframe {}/{}: {}% rendered", frame + 1, self.frames, (y + 1) * 100 / self.height);
+                std::io::stdout().flush().unwrap();
             }
-
-            print!("\r{}% rendered", (i+1) * 100 / handles.len());
-            std::io::stdout().flush().unwrap();
-        }
-    }
-
-    fn render_anim(self: &Arc<Self>) {
-        assert_ne!(self.frames, 1);
-        let pool = ThreadPool::new(self.threads);
-
-        //type Row = Vec<Pixel>;
-
-        let framepath = Path::new("frames");
-        if framepath.exists() {
-            fs::remove_dir_all(framepath).unwrap();
-        }
-        fs::create_dir(framepath).unwrap();
-
-        let escapes: Arc<Matrix<EscapeTime>> = Arc::new(self.calc_escapes(&pool));
-
-        for frame in 0..self.frames {
-            // t is in the range [0, 1)
-            let t = frame as f64 / self.frames_f;
-
-            let image_data: Vec<u8> = self.colourize(&escapes, t, &pool);
-
-            let mut writer = self.create_png_writer(&format!("{}/{}.png", framepath.display(), frame));
-            writer.write_all(&image_data).expect("Couldn't write to file");
-
-            print!("\r{}/{} frames", frame + 1, self.frames);
-            std::io::stdout().flush().unwrap();
         }
     }
 }

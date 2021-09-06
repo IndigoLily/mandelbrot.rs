@@ -8,7 +8,6 @@ edition = "2018"
 
 [dependencies]
 png = "~0.17"
-threadpool = "1.8.1"
 num = "0.3.0"
 jemallocator = "0.3.0"
 
