@@ -6,13 +6,12 @@ use std::{
     sync::Arc,
     str::FromStr,
     path::Path,
+    thread::{ self, spawn, JoinHandle },
 };
 
 use png::{BitDepth, ColorType, Encoder};
 use num::Complex;
 use threadpool::ThreadPool;
-use crossbeam::channel::{ self, Sender, Receiver };
-use crossbeam::sync::{ Parker, Unparker };
 
 use std::f64::consts::E;
 use std::f64::consts::TAU;
@@ -308,44 +307,37 @@ impl Renderer {
 
         let height_range = 0..self.height;
 
-        type Row = Vec<u8>;
+        type Row = Vec<Pixel>;
 
-        let mut parkers: Vec<Parker> = height_range.clone().map(|_| Parker::new()).collect();
-        let mut unparkers: Vec<Unparker> = parkers.iter().map(|p| p.unparker().clone()).collect();
-        let (pixel_scs, pixel_rcs): (Vec<Sender<Row>>, Vec<Receiver<Row>>) = height_range.clone().map(|_| channel::unbounded()).unzip();
+        let mut handles: Vec<JoinHandle<Row>> = Vec::with_capacity(self.height);
 
         for y in height_range.clone() {
-            let sc: Sender<Row> = pixel_scs[y].clone();
             let rndr = self.clone();
-            let p = parkers.pop().unwrap();
-            std::thread::spawn(move || {
-                p.park();
-                let row: Row = (0..rndr.width).map(|x| IntoIterator::into_iter(get_pixel(x, y, rndr.start_t, &rndr))).flatten().collect();
-                sc.send(row).unwrap();
-            });
+            handles.push(spawn(move || {
+                thread::park();
+                (0..rndr.width).map(|x| get_pixel(x, y, rndr.start_t, &rndr)).collect()
+            }));
         }
 
-        for _ in 0..self.threads {
-            // start self.threads amount of threads
-            if let Some(u) = unparkers.pop() {
-                u.unpark();
+        for t in 0..self.threads {
+            if t < handles.len() {
+                handles[t].thread().unpark();
             }
         }
 
-        let mut count = 0;
-        for i in height_range.clone() {
-            let rc: Receiver<Row> = pixel_rcs[i].clone();
+        for y in height_range {
+            let row = handles.remove(0).join().unwrap();
 
-            let p = rc.recv().unwrap();
-
-            if let Some(u) = unparkers.pop() {
-                u.unpark();
+            let i = self.threads - 1;
+            if i < handles.len() {
+                handles[i].thread().unpark();
             }
 
-            writer.write(&p).unwrap();
+            for p in row {
+                writer.write(&p).unwrap();
+            }
 
-            count += 1;
-            print!("\r{}% rendered", count * 100 / self.height);
+            print!("\r{}% rendered", (y+1) * 100 / self.height);
             std::io::stdout().flush().unwrap();
         }
     }
@@ -368,16 +360,8 @@ impl Renderer {
 
             let image_data: Vec<u8> = colourize(&escapes, t, &self, &pool);
 
-            let file = File::create(format!("{}/{}.png", framepath.display(), frame)).expect("Couldn't open file");
-
-            let mut encoder = Encoder::new(file, self.width as u32, self.height as u32);
-            encoder.set_color(ColorType::RGB);
-            encoder.set_depth(BitDepth::Eight);
-
-            let mut writer = encoder.write_header().unwrap();
-            writer
-                .write_image_data(&image_data)
-                .expect("Couldn't write to file");
+            let mut writer = self.create_png_writer(&format!("{}/{}.png", framepath.display(), frame));
+            writer.write_all(&image_data).expect("Couldn't write to file");
 
             print!("\r{}/{} frames", frame + 1, self.frames);
             std::io::stdout().flush().unwrap();
@@ -721,7 +705,7 @@ fn calc_at(c: &Complex<f64>, rndr: &Renderer) -> EscapeTime {
 }
 
 fn calc_escapes(rndr: &Arc<Renderer>, pool: &ThreadPool) -> Matrix<EscapeTime> {
-    let (tx, rx) = channel::unbounded();
+    let (tx, rx) = std::sync::mpsc::channel();
 
     let mut escapes: Matrix<EscapeTime> = Matrix::new(rndr.width * rndr.aa, rndr.height * rndr.aa);
     let width = escapes.width();
@@ -762,7 +746,7 @@ fn calc_escapes(rndr: &Arc<Renderer>, pool: &ThreadPool) -> Matrix<EscapeTime> {
 }
 
 fn colourize(escapes: &Arc<Matrix<EscapeTime>>, t: f64, rndr: &Arc<Renderer>, pool: &ThreadPool) -> Vec<u8> {
-    let (tx, rx) = channel::unbounded();
+    let (tx, rx) = std::sync::mpsc::channel();
 
     let mut data: Matrix<Pixel> = Matrix::new(rndr.width, rndr.height);
 

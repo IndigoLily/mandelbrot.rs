@@ -10,4 +10,7 @@ edition = "2018"
 png = "0.16.7"
 threadpool = "1.8.1"
 num = "0.3.0"
-crossbeam = "~0.8.1"
+
+[profile.release]
+lto = "fat"
+codegen-units = 1
