@@ -11,7 +11,6 @@ use std::{
     sync::Arc,
     str::FromStr,
     path::Path,
-    thread::{ self, JoinHandle },
 };
 
 use png::{BitDepth, ColorType, Encoder};
@@ -38,6 +37,44 @@ fn rotate_complex(c: &Complex<f64>, angle: f64, origin: &Complex<f64>) -> Comple
     let angle = deg_to_rad(angle);
     (c - origin) * Complex::new(angle.cos(), angle.sin()) + origin
 }
+
+mod thread_queue {
+    use std::thread::{ JoinHandle, spawn };
+    use std::sync::mpsc::{ Sender, Receiver, sync_channel, channel };
+
+    pub struct ThreadQueue<T, F> {
+        fn_sender: Sender<F>,
+        handle_receiver: Receiver<JoinHandle<T>>,
+    }
+
+    impl<T: 'static + Send, F: 'static + Send + FnOnce() -> T> ThreadQueue<T,F> {
+        pub fn new(size: usize) -> Self {
+            let (fn_sender, fn_receiver) = channel();
+            let (handle_sender, handle_receiver) = sync_channel(size);
+
+            spawn(move || {
+                for msg in fn_receiver {
+                    handle_sender.send(spawn(msg)).unwrap();
+                }
+            });
+
+            ThreadQueue {
+                fn_sender,
+                handle_receiver,
+            }
+        }
+
+        pub fn enqueue(&mut self, func: F) {
+            self.fn_sender.send(func).unwrap();
+        }
+
+        pub fn dequeue(&mut self) -> T {
+            self.handle_receiver.recv().unwrap().join().unwrap()
+        }
+    }
+}
+
+use thread_queue::ThreadQueue;
 
 #[allow(dead_code)]
 struct Renderer {
@@ -399,7 +436,6 @@ impl Renderer {
     fn render_arc(self: &Arc<Self>) {
         let anim = self.frames != 1;
         let frame_area = self.width * self.height;
-        let total_area = frame_area * self.frames;
 
         if anim {
             let framepath = Path::new("frames");
@@ -418,36 +454,20 @@ impl Renderer {
             vec![self.create_png_writer("mandelbrot.png")]
         };
 
-        macro_rules! start_thread {
-            ($idx:expr, $fns:ident, $handles:ident) => {
-                if let Some(func) = $fns.get_mut($idx) {
-                    let func = func.take().unwrap();
-                    $handles.push(Some(thread::spawn(func)));
-                }
-            }
-        }
-
-        let mut esc_fns: Vec<_> = Vec::with_capacity(frame_area);
+        let mut esc_pool = ThreadQueue::new(self.threads);
         for y in 0..self.height {
             let rndr = self.clone();
-            let func = move || -> Vec<Vec<EscapeTime>> {
+            esc_pool.enqueue(move || -> Vec<Vec<EscapeTime>> {
                 (0..rndr.width).map(|x| rndr.calc_aa(x,y)).collect()
-            };
-            esc_fns.push(Some(func));
+            });
         }
 
         let mut escapes: Vec<Vec<EscapeTime>> = Vec::with_capacity(frame_area);
-        let mut esc_handles: Vec<Option<JoinHandle<Vec<Vec<EscapeTime>>>>> = Vec::with_capacity(esc_fns.capacity());
 
-        for t in 0..self.threads {
-            start_thread!(t, esc_fns, esc_handles);
-        }
-
-        for i in 0..esc_fns.len() {
-            let mut sample_row = esc_handles[i].take().unwrap().join().unwrap();
-            escapes.append(&mut sample_row);
-            print!("\r{}% calculated", (i+1) * 100 / esc_fns.len());
-            start_thread!(i + self.threads, esc_fns, esc_handles);
+        for i in 0..self.height {
+            let mut row = esc_pool.dequeue();
+            escapes.append(&mut row);
+            print!("\r{}% calculated", (i+1) * 100 / self.height);
             std::io::stdout().flush().unwrap();
         }
         println!();
@@ -456,37 +476,34 @@ impl Renderer {
 
         assert_eq!(frame_area, escapes.len());
 
-        let mut pix_fns: Vec<Option<_>> = Vec::with_capacity(self.threads * self.height * self.frames);
+        let mut pix_pool = ThreadQueue::new(self.frames);
         for frame in 0..self.frames {
             for y in 0..self.height {
                 let t = frame as f64 / self.frames_f;
                 let e = Arc::clone(&escapes);
                 let i = y * self.width;
                 let rndr = self.clone();
-                pix_fns.push(Some(move || -> Vec<Pixel> {
+                pix_pool.enqueue(move || -> Vec<Pixel> {
                     e[i..].iter().take(rndr.width).map(|e| Renderer::colour_to_pixel(rndr.avg_colours(e,t))).collect()
-                }));
+                });
             }
-        }
-
-        let mut pix_handles: Vec<Option<JoinHandle<_>>> = Vec::with_capacity(pix_fns.len());
-
-        for t in 0..self.threads {
-            start_thread!(t, pix_fns, pix_handles);
         }
 
         for (frame, w) in writers.iter_mut().enumerate() {
             for y in 0..self.height {
-                let i = frame * self.height + y;
-                let row: Vec<Pixel> = pix_handles[i].take().unwrap().join().unwrap();
-
-                start_thread!(i + self.threads, pix_fns, pix_handles);
+                let row: Vec<Pixel> = pix_pool.dequeue();
 
                 for p in row {
                     w.write_all(&p).unwrap();
                 }
 
-                print!("\rframe {}/{}: {}% rendered", frame + 1, self.frames, (y + 1) * 100 / self.height);
+                let frameinfo = if anim {
+                    let width = self.frames.to_string().len();
+                    format!("frame {:>width$}/{}: ", frame + 1, self.frames, width=width)
+                } else {
+                    String::new()
+                };
+                print!("\r{}{:>3}% colourized", frameinfo, (y + 1) * 100 / self.height);
                 std::io::stdout().flush().unwrap();
             }
         }
