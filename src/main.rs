@@ -39,93 +39,6 @@ fn rotate_complex(c: &Complex<f64>, angle: f64, origin: &Complex<f64>) -> Comple
     (c - origin) * Complex::new(angle.cos(), angle.sin()) + origin
 }
 
-mod matrix {
-    pub struct Matrix<T> {
-        width: usize,
-        height: usize,
-        #[allow(dead_code)]
-        area: usize,
-        vec: Vec<T>,
-    }
-
-    impl<T> Matrix<T> {
-        pub fn from_vec(vec: Vec<T>, width: usize) -> Self {
-            let height = vec.len() / width;
-            assert!(width == vec.len() / height);
-            Matrix { width, height, area: width * height, vec }
-        }
-
-        pub fn width(&self) -> usize {
-            self.width
-        }
-
-        pub fn height(&self) -> usize {
-            self.height
-        }
-
-        fn index_at(&self, x: usize, y: usize) -> Option<usize> {
-            if x < self.width && y < self.height {
-                Some(y * self.width + x)
-            } else {
-                None
-            }
-        }
-
-        pub fn get(&self, x: usize, y: usize) -> Option<&T> {
-            if let Some(idx) = self.index_at(x, y) {
-                unsafe {
-                    Some(self.vec.get_unchecked(idx))
-                }
-            } else {
-                None
-            }
-        }
-
-        pub fn get_mut(&mut self, x: usize, y: usize) -> Option<&mut T> {
-            if let Some(idx) = self.index_at(x, y) {
-                unsafe {
-                    Some(self.vec.get_unchecked_mut(idx))
-                }
-            } else {
-                None
-            }
-        }
-    }
-
-    impl<T> From<Matrix<T>> for Vec<T> {
-        fn from(matrix: Matrix<T>) -> Self {
-            matrix.vec
-        }
-    }
-
-    impl<T> From<Vec<Vec<T>>> for Matrix<T> {
-        fn from(vecs: Vec<Vec<T>>) -> Self {
-            let len = vecs[0].len();
-            assert!(vecs.iter().all(|v| v.len() == len));
-            Matrix::from_vec(vecs.into_iter().flatten().collect(), len)
-        }
-    }
-
-    impl<T: Clone> Matrix<T> {
-        pub fn with_default(width: usize, height: usize, default: T) -> Self {
-            let area = width * height;
-            Matrix { width, height, area, vec: vec![default; area] }
-        }
-    }
-
-    impl<T: Clone + Default> Matrix<T> {
-        pub fn new(width: usize, height: usize) -> Self {
-            Matrix::with_default(width, height, Default::default())
-        }
-
-        pub fn square(side: usize) -> Self {
-            Matrix::with_default(side, side, Default::default())
-        }
-    }
-}
-
-use matrix::Matrix;
-
 #[allow(dead_code)]
 struct Renderer {
     width:     usize,
@@ -413,22 +326,22 @@ impl Renderer {
                                 colours[i2][0],
                                 colours[i3][0],
                                 percent,
-                                ),
-                                cubic_interpolate(
-                                    colours[i0][1],
-                                    colours[i1][1],
-                                    colours[i2][1],
-                                    colours[i3][1],
-                                    percent,
-                                    ),
-                                    cubic_interpolate(
-                                        colours[i0][2],
-                                        colours[i1][2],
-                                        colours[i2][2],
-                                        colours[i3][2],
-                                        percent,
-                                        ),
-                                    ]
+                            ),
+                            cubic_interpolate(
+                                colours[i0][1],
+                                colours[i1][1],
+                                colours[i2][1],
+                                colours[i3][1],
+                                percent,
+                            ),
+                            cubic_interpolate(
+                                colours[i0][2],
+                                colours[i1][2],
+                                colours[i2][2],
+                                colours[i3][2],
+                                percent,
+                            ),
+                            ]
                     }
                 },
             }
@@ -437,38 +350,38 @@ impl Renderer {
         }
     }
 
-    // x and y are start offsets for getting escapes from matrix
-    fn calc_aa(&self, x: usize, y: usize, t: f64, escapes: &Matrix<EscapeTime>) -> Pixel {
-        let mut sum: Colour = BLACK;
-        for yaa in 0..self.aa {
-            for xaa in 0..self.aa {
-                let sample = self.get_colour(escapes.get(x * self.aa + xaa, y * self.aa + yaa).unwrap(), t);
-                for i in 0..3 {
-                    sum[i] += sample[i];
-                }
+    fn calc_aa(&self, x: usize, y: usize) -> Vec<EscapeTime> {
+        let (x, y) = (x as f64, y as f64);
+        let mut samples = Vec::with_capacity(self.aa * self.aa);
+        for xaa in 0..self.aa {
+            for yaa in 0..self.aa {
+                let xaa = xaa as f64 / self.aa_f;
+                let yaa = yaa as f64 / self.aa_f;
+                samples.push(self.calc_at(&self.image_to_complex(x + xaa, y + yaa)));
             }
         }
-        for c in &mut sum {
-            *c /= self.aa_f * self.aa_f;
-        }
-        let mut pix: Pixel = Default::default();
-        for (pix_c, sum_c) in pix.iter_mut().zip(sum.iter()) {
-            *pix_c = (sum_c.powf(1.0 / 2.2) * 255.0) as u8;
-        }
-        pix
+        samples
     }
 
-    fn get_pixel(&self, x: usize, y: usize, t: f64) -> Pixel {
-        let mut escapes: Matrix<EscapeTime> = Matrix::square(self.aa);
-        let x = x as f64;
-        let y = y as f64;
-        for yaa in 0..self.aa {
-            for xaa in 0..self.aa {
-                let c = self.image_to_complex(x + xaa as f64 / self.aa_f, y + yaa as f64 / self.aa_f);
-                *escapes.get_mut(xaa, yaa).unwrap() = self.calc_at(&c);
+    fn avg_colours(&self, escapes: &Vec<EscapeTime>, t: f64) -> Colour {
+        let mut sum: Colour = Default::default();
+        for clr in escapes.iter().map(|e| self.get_colour(e,t)) {
+            for ch in 0..3 {
+                sum[ch] += clr[ch];
             }
         }
-        self.calc_aa(0, 0, t, &escapes)
+        for ch in sum.iter_mut() {
+            *ch /= self.aa_sq;
+        }
+        sum
+    }
+
+    fn colour_to_pixel(clr: Colour) -> Pixel {
+        [
+            (clr[0].powf(1.0 / 2.2) * 255.0) as u8,
+            (clr[1].powf(1.0 / 2.2) * 255.0) as u8,
+            (clr[2].powf(1.0 / 2.2) * 255.0) as u8,
+        ]
     }
 
     fn create_png_writer(&self, filename: &str) -> BufWriter<png::StreamWriter<File>> {
@@ -486,7 +399,7 @@ impl Renderer {
     fn render_arc(self: &Arc<Self>) {
         let anim = self.frames != 1;
         let frame_area = self.width * self.height;
-        let total_area = frame_area * if anim { self.frames } else { 1 };
+        let total_area = frame_area * self.frames;
 
         if anim {
             let framepath = Path::new("frames");
@@ -505,39 +418,69 @@ impl Renderer {
             vec![self.create_png_writer("mandelbrot.png")]
         };
 
-        type Row = Vec<Pixel>;
-
-        let mut handles: Vec<Option<JoinHandle<Row>>> = Vec::with_capacity(self.threads * self.height * self.frames);
-        let mut closures: Vec<Option<_>> = Vec::with_capacity(handles.capacity());
-
-        for i in (0..total_area).step_by(self.width) {
-            let rndr = self.clone();
-            closures.push(Some(move || -> Row {
-                (i..).take(rndr.width).map(|i| {
-                    rndr.get_pixel(i % rndr.width, (i % frame_area) / rndr.width, (i / frame_area) as f64 / rndr.frames_f)
-                }).collect()
-            }));
-        }
-
-        macro_rules! start {
-            ($idx:expr) => {
-                if let Some(closure) = closures.get_mut($idx) {
-                    let closure = closure.take().unwrap();
-                    handles.push(Some(thread::spawn(closure)));
+        macro_rules! start_thread {
+            ($idx:expr, $fns:ident, $handles:ident) => {
+                if let Some(func) = $fns.get_mut($idx) {
+                    let func = func.take().unwrap();
+                    $handles.push(Some(thread::spawn(func)));
                 }
             }
         }
 
+        let mut esc_fns: Vec<_> = Vec::with_capacity(frame_area);
+        for y in 0..self.height {
+            let rndr = self.clone();
+            let func = move || -> Vec<Vec<EscapeTime>> {
+                (0..rndr.width).map(|x| rndr.calc_aa(x,y)).collect()
+            };
+            esc_fns.push(Some(func));
+        }
+
+        let mut escapes: Vec<Vec<EscapeTime>> = Vec::with_capacity(frame_area);
+        let mut esc_handles: Vec<Option<JoinHandle<Vec<Vec<EscapeTime>>>>> = Vec::with_capacity(esc_fns.capacity());
+
         for t in 0..self.threads {
-            start!(t);
+            start_thread!(t, esc_fns, esc_handles);
+        }
+
+        for i in 0..esc_fns.len() {
+            let mut sample_row = esc_handles[i].take().unwrap().join().unwrap();
+            escapes.append(&mut sample_row);
+            print!("\r{}% calculated", (i+1) * 100 / esc_fns.len());
+            start_thread!(i + self.threads, esc_fns, esc_handles);
+            std::io::stdout().flush().unwrap();
+        }
+        println!();
+
+        let escapes = Arc::new(escapes);
+
+        assert_eq!(frame_area, escapes.len());
+
+        let mut pix_fns: Vec<Option<_>> = Vec::with_capacity(self.threads * self.height * self.frames);
+        for frame in 0..self.frames {
+            for y in 0..self.height {
+                let t = frame as f64 / self.frames_f;
+                let e = Arc::clone(&escapes);
+                let i = y * self.width;
+                let rndr = self.clone();
+                pix_fns.push(Some(move || -> Vec<Pixel> {
+                    e[i..].iter().take(rndr.width).map(|e| Renderer::colour_to_pixel(rndr.avg_colours(e,t))).collect()
+                }));
+            }
+        }
+
+        let mut pix_handles: Vec<Option<JoinHandle<_>>> = Vec::with_capacity(pix_fns.len());
+
+        for t in 0..self.threads {
+            start_thread!(t, pix_fns, pix_handles);
         }
 
         for (frame, w) in writers.iter_mut().enumerate() {
             for y in 0..self.height {
                 let i = frame * self.height + y;
-                let row: Row = handles[i].take().unwrap().join().unwrap();
+                let row: Vec<Pixel> = pix_handles[i].take().unwrap().join().unwrap();
 
-                start!(i + self.threads);
+                start_thread!(i + self.threads, pix_fns, pix_handles);
 
                 for p in row {
                     w.write_all(&p).unwrap();
