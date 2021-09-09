@@ -1,3 +1,5 @@
+#![allow(unused_imports)]
+
 extern crate jemallocator;
 
 #[global_allocator]
@@ -8,13 +10,15 @@ use std::{
     fmt::Debug,
     fs::{ self, File },
     io::{ Write, BufRead, BufReader, BufWriter },
-    sync::Arc,
+    sync::{ Arc, Mutex, RwLock },
     str::FromStr,
     path::Path,
+    time::Duration,
 };
 
 use png::{BitDepth, ColorType, Encoder};
 use num::Complex;
+use rayon::prelude::*;
 
 use std::f64::consts::E;
 use std::f64::consts::TAU;
@@ -22,13 +26,12 @@ use std::f64::consts::PI;
 
 type Pixel = [u8; 3];
 type Colour = [f64; 3];
-
-const BLACK: Colour = [0.0; 3];
-
 type EscapeTime = Option<f64>;
 
+const BLACK: Colour = [0.0; 3];
 const FRAMEDIR: &str = "frames";
 
+// utility functions {{{
 fn deg_to_rad(deg: f64) -> f64 {
     deg / 360.0 * TAU
 }
@@ -38,46 +41,14 @@ fn rotate_complex(c: &Complex<f64>, angle: f64, origin: &Complex<f64>) -> Comple
     (c - origin) * Complex::new(angle.cos(), angle.sin()) + origin
 }
 
-mod thread_queue {
-    use std::thread::{ JoinHandle, spawn };
-    use std::sync::mpsc::{ Sender, Receiver, sync_channel, channel };
-
-    pub struct ThreadQueue<T, F> {
-        fn_sender: Sender<F>,
-        handle_receiver: Receiver<JoinHandle<T>>,
-    }
-
-    impl<T: 'static + Send, F: 'static + Send + FnOnce() -> T> ThreadQueue<T,F> {
-        pub fn new(size: usize) -> Self {
-            let (fn_sender, fn_receiver) = channel();
-            let (handle_sender, handle_receiver) = sync_channel(size);
-
-            spawn(move || {
-                for msg in fn_receiver {
-                    handle_sender.send(spawn(msg)).unwrap();
-                }
-            });
-
-            ThreadQueue {
-                fn_sender,
-                handle_receiver,
-            }
-        }
-
-        pub fn enqueue(&mut self, func: F) {
-            self.fn_sender.send(func).unwrap();
-        }
-
-        pub fn dequeue(&mut self) -> T {
-            self.handle_receiver.recv().unwrap().join().unwrap()
-        }
-    }
+#[allow(dead_code)]
+fn xy_iterator(width: usize, height: usize) -> Vec<(usize,usize)> {
+    (0..height).flat_map(move |y| (0..width).map(move |x| {(x,y)})).collect()
 }
-
-use thread_queue::ThreadQueue;
+// }}}
 
 #[allow(dead_code)]
-struct Renderer {
+struct Renderer { // {{{
     width:     usize,
     height:    usize,
     smaller:   usize,
@@ -109,12 +80,10 @@ struct Renderer {
     inside:    Colour,
     speed:     f64,
     acc:       f64,
+} // }}}
 
-    threads:   usize,
-}
-
-impl Renderer {
-    fn new() -> Self {
+impl Renderer { // {{{
+    fn new() -> Self { // {{{
         Renderer {
             width       : 640,
             height      : 640,
@@ -147,12 +116,10 @@ impl Renderer {
             inside      : BLACK,
             speed       : 1.0,
             acc         : 1.0,
-
-            threads     : 1,
         }
-    }
+    } // }}}
 
-    // builder functions
+    // builder functions {{{
     fn width(&mut self, width: usize) -> &mut Self {
         self.width = width;
         self.width_f = self.width as f64;
@@ -247,25 +214,21 @@ impl Renderer {
         self.start_t = start_t;
         self
     }
-
-    fn threads(&mut self, threads: usize) -> &mut Self {
-        self.threads = threads;
-        self
-    }
+    // }}}
 
     // take a point in image coordinates, and return its location in the complex plane
-    fn image_to_complex(&self, x: f64, y: f64) -> Complex<f64> {
+    fn image_to_complex(&self, x: f64, y: f64) -> Complex<f64> { // {{{
         let c = (Complex::new(x, y) - Complex::new(self.width_f, self.height_f) / 2.0) / self.smaller_f * 4.0 / self.zoom;
         if self.julia {
             rotate_complex(&c, self.angle, &Complex::new(0.0, 0.0)) + self.ctr_julia
         } else {
             c + self.center
         }
-    }
+    } // }}}
 
     // calculate the escape time at a point c in the complex plane
     // if c is in the Mandelbrot set, returns None
-    fn calc_at(&self, c: &Complex<f64>) -> EscapeTime {
+    fn calc_at(&self, c: &Complex<f64>) -> EscapeTime { // {{{
         let mut z = c.clone();
         let mut itr = 1;
 
@@ -283,9 +246,9 @@ impl Renderer {
                 return None;
             }
         }
-    }
+    } // }}}
 
-    fn get_colour(&self, escape: &EscapeTime, t: f64) -> Colour {
+    fn get_colour(&self, escape: &EscapeTime, t: f64) -> Colour { // {{{
         if let Some(escape) = escape {
             let escape = escape.powf(self.acc) * self.speed;
 
@@ -385,9 +348,9 @@ impl Renderer {
         } else {
             self.inside
         }
-    }
+    } // }}}
 
-    fn calc_aa(&self, x: usize, y: usize) -> Vec<EscapeTime> {
+    fn calc_aa(&self, x: usize, y: usize) -> Vec<EscapeTime> { // {{{
         let (x, y) = (x as f64, y as f64);
         let mut samples = Vec::with_capacity(self.aa * self.aa);
         for xaa in 0..self.aa {
@@ -398,9 +361,9 @@ impl Renderer {
             }
         }
         samples
-    }
+    } // }}}
 
-    fn avg_colours(&self, escapes: &Vec<EscapeTime>, t: f64) -> Colour {
+    fn avg_colours(&self, escapes: &Vec<EscapeTime>, t: f64) -> Colour { // {{{
         let mut sum: Colour = Default::default();
         for clr in escapes.iter().map(|e| self.get_colour(e,t)) {
             for ch in 0..3 {
@@ -411,32 +374,34 @@ impl Renderer {
             *ch /= self.aa_sq;
         }
         sum
-    }
+    } // }}}
 
-    fn colour_to_pixel(clr: Colour) -> Pixel {
+    fn colour_to_pixel(clr: Colour) -> Pixel { // {{{
         [
             (clr[0].powf(1.0 / 2.2) * 255.0) as u8,
             (clr[1].powf(1.0 / 2.2) * 255.0) as u8,
             (clr[2].powf(1.0 / 2.2) * 255.0) as u8,
         ]
-    }
+    } // }}}
 
-    fn create_png_writer(&self, filename: &str) -> BufWriter<png::StreamWriter<File>> {
+    fn create_png_writer(&self, filename: &str) -> BufWriter<png::StreamWriter<File>> { // {{{
         let file = File::create(filename).expect("Couldn't open file");
         let mut encoder = Encoder::new(file, self.width as u32, self.height as u32);
         encoder.set_color(ColorType::Rgb);
         encoder.set_depth(BitDepth::Eight);
         BufWriter::with_capacity(1024 * 1024 /*1MiB*/, encoder.write_header().unwrap().into_stream_writer().unwrap())
-    }
+    } // }}}
 
-    fn render(self) {
+    fn render(self) { // {{{
         Arc::new(self).render_arc();
-    }
+    } // }}}
 
-    fn render_arc(self: &Arc<Self>) {
+    fn render_arc(self: &Arc<Self>) { // {{{
         let anim = self.frames != 1;
         let frame_area = self.width * self.height;
+        let _total_area = frame_area * self.frames;
 
+        // clean frame dir {{{
         if anim {
             let framepath = Path::new("frames");
             if framepath.exists() {
@@ -444,8 +409,10 @@ impl Renderer {
             }
             fs::create_dir(framepath).unwrap();
         }
+        // }}}
 
-        let mut writers: Vec<_> = if anim {
+        // writer(s) {{{
+        let writers: Vec<_> = if anim {
             (0..self.frames).map(|frame| {
                 let name = &format!("{}/{}.png", FRAMEDIR, frame);
                 self.create_png_writer(name)
@@ -453,64 +420,87 @@ impl Renderer {
         } else {
             vec![self.create_png_writer("mandelbrot.png")]
         };
+        // }}}
 
-        let mut esc_pool = ThreadQueue::new(self.threads);
-        for y in 0..self.height {
-            let rndr = self.clone();
-            esc_pool.enqueue(move || -> Vec<Vec<EscapeTime>> {
-                (0..rndr.width).map(|x| rndr.calc_aa(x,y)).collect()
-            });
-        }
+        // escapes {{{
+        let esc_count = Arc::new(RwLock::new(0usize));
 
-        let mut escapes: Vec<Vec<EscapeTime>> = Vec::with_capacity(frame_area);
-
-        for i in 0..self.height {
-            let mut row = esc_pool.dequeue();
-            escapes.append(&mut row);
-            print!("\r{}% calculated", (i+1) * 100 / self.height);
-            std::io::stdout().flush().unwrap();
-        }
-        println!();
-
-        let escapes = Arc::new(escapes);
-
-        assert_eq!(frame_area, escapes.len());
-
-        let mut pix_pool = ThreadQueue::new(self.frames);
-        for frame in 0..self.frames {
-            for y in 0..self.height {
-                let t = frame as f64 / self.frames_f;
-                let e = Arc::clone(&escapes);
-                let i = y * self.width;
-                let rndr = self.clone();
-                pix_pool.enqueue(move || -> Vec<Pixel> {
-                    e[i..].iter().take(rndr.width).map(|e| Renderer::colour_to_pixel(rndr.avg_colours(e,t))).collect()
-                });
+        let esc_count_jh = std::thread::spawn({
+            let esc_count = Arc::clone(&esc_count);
+            let total = self.height;
+            move || {
+                let t = Duration::from_millis(100);
+                loop {
+                    let count = *esc_count.read().unwrap();
+                    print!("\r{}% calculated", count * 100 / total);
+                    std::io::stdout().flush().unwrap();
+                    if count >= total {
+                        break;
+                    } else {
+                        std::thread::sleep(t);
+                    }
+                }
+                println!();
             }
-        }
+        });
 
-        for (frame, w) in writers.iter_mut().enumerate() {
+        let escapes: Vec<Vec<EscapeTime>> = (0..self.height).into_par_iter().flat_map(|y| {
+            let row: Vec<Vec<EscapeTime>> = (0..self.width).map(|x| {
+                self.calc_aa(x,y)
+            }).collect();
+            *esc_count.write().unwrap() += 1;
+            row
+        }).collect();
+
+        esc_count_jh.join().unwrap();
+        assert_eq!(*esc_count.read().unwrap(), self.height);
+        // }}}
+
+        // colouring and writing {{{
+        let clr_count = Arc::new(RwLock::new(0usize));
+
+        let clr_count_jh = std::thread::spawn({
+            let clr_count = Arc::clone(&clr_count);
+            let total = self.height * self.frames;
+            move || {
+                let t = Duration::from_millis(100);
+                loop {
+                    let count = *clr_count.read().unwrap();
+                    print!("\r{}% coloured", count * 100 / total);
+                    std::io::stdout().flush().unwrap();
+                    if count >= total {
+                        break;
+                    } else {
+                        std::thread::sleep(t);
+                    }
+                }
+                println!();
+            }
+        });
+
+        writers.into_par_iter().enumerate().for_each(|(frame, mut writer)| {
+            let t = frame as f64 / self.frames_f;
             for y in 0..self.height {
-                let row: Vec<Pixel> = pix_pool.dequeue();
+                let row: Vec<Pixel> = (0..self.width).into_iter().map(|x| {
+                    let colour = self.avg_colours(&escapes[x + y * self.width],t);
+                    Renderer::colour_to_pixel(colour)
+                }).collect();
 
-                for p in row {
-                    w.write_all(&p).unwrap();
+                for pixel in row.iter() {
+                    writer.write_all(pixel).unwrap();
                 }
 
-                let frameinfo = if anim {
-                    let width = self.frames.to_string().len();
-                    format!("frame {:>width$}/{}: ", frame + 1, self.frames, width=width)
-                } else {
-                    String::new()
-                };
-                print!("\r{}{:>3}% colourized", frameinfo, (y + 1) * 100 / self.height);
-                std::io::stdout().flush().unwrap();
+                *clr_count.write().unwrap() += 1;
             }
-        }
-    }
-}
+        });
 
-fn env_or_default<T>(name: &str, default: T) -> T
+        clr_count_jh.join().unwrap();
+        assert_eq!(*clr_count.read().unwrap(), self.height * self.frames);
+        // }}}
+    } // }}}
+} // }}}
+
+fn env_or_default<T>(name: &str, default: T) -> T // {{{
 where
     T: std::str::FromStr,
     <T as std::str::FromStr>::Err: Debug,
@@ -521,8 +511,9 @@ where
             .expect(&format!("Couldn't parse {} setting", name)),
         Err(_) => default,
     }
-}
+} // }}}
 
+// intertpolation {{{
 enum Interpolation {
     None,
     Linear,
@@ -561,7 +552,9 @@ fn cubic_interpolate(y0: f64, y1: f64, y2: f64, y3: f64, mu: f64) -> f64 {
     let a3  = y1;
     a0 * mu * mu2 + a1 * mu2 + a2 * mu + a3
 }
+// }}}
 
+// colour {{{
 enum ColourAlgo {
     BW,
     Grey,
@@ -570,7 +563,6 @@ enum ColourAlgo {
     SineMult(f64, f64, f64),
     SineAdd(f64, f64, f64),
     Palette(Vec<Colour>),
-    //Iq([[f64; 3]; 4]),
 }
 
 fn hex_to_rgb(hex: String) -> Colour {
@@ -590,11 +582,12 @@ fn load_palette(path: String) -> Vec<Colour> {
     let reader = BufReader::new(file);
     reader.lines().map(|x| hex_to_rgb(x.unwrap())).collect()
 }
+// }}}
 
-fn main() {
+fn main() { // {{{
     let mut rndr = Renderer::new();
 
-    {
+    { // {{{
         // if env var exists, parse and set rndr to that value
         macro_rules! setting {
             ($name:ident) => {
@@ -617,7 +610,10 @@ fn main() {
         setting!(interp);
         setting!(speed);
         setting!(acc);
-        setting!(threads);
+
+        if let Ok(threads) = env::var("threads") {
+            rayon::ThreadPoolBuilder::new().num_threads(threads.parse().unwrap()).build_global().unwrap();
+        }
 
         // doesn't work with setting! macro because of hex_to_rgb
         if let Ok(inside) = env::var("inside") {
@@ -661,9 +657,9 @@ fn main() {
         assert!(rndr.aa     >= 1, "Anti-aliasing level must be at least 1");
         assert!(rndr.bail   >= 20.0, "Bailout must be at least 20");
         assert!((0.0..=1.0).contains(&band_size), "Band size must be between 0 and 1");
-    }
+    } // }}}
 
     rndr.render();
 
-    println!("\nDone");
-}
+    println!("Done");
+} // }}}

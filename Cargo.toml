@@ -10,6 +10,7 @@ edition = "2018"
 png = "~0.17"
 num = "0.3.0"
 jemallocator = "0.3.0"
+rayon = "1.5.1"
 
 [profile.release]
 lto = "fat"
