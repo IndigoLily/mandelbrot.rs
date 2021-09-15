@@ -10,7 +10,8 @@ use std::{
     fmt::Debug,
     fs::{ self, File },
     io::{ Write, BufRead, BufReader, BufWriter },
-    sync::{ Arc, Mutex, RwLock },
+    sync::{ Arc, Mutex, RwLock, Condvar },
+    thread::{ self, JoinHandle },
     str::FromStr,
     path::Path,
     time::Duration,
@@ -19,6 +20,8 @@ use std::{
 use png::{BitDepth, ColorType, Encoder};
 use num::Complex;
 use rayon::prelude::*;
+use crossbeam::channel::unbounded;
+use atomic_counter::{ RelaxedCounter, AtomicCounter };
 
 use std::f64::consts::E;
 use std::f64::consts::TAU;
@@ -229,7 +232,7 @@ impl Renderer { // {{{
     // calculate the escape time at a point c in the complex plane
     // if c is in the Mandelbrot set, returns None
     fn calc_at(&self, c: &Complex<f64>) -> EscapeTime { // {{{
-        let mut z = c.clone();
+        let mut z = *c;
         let mut itr = 1;
 
         loop {
@@ -384,12 +387,12 @@ impl Renderer { // {{{
         ]
     } // }}}
 
-    fn create_png_writer(&self, filename: &str) -> BufWriter<png::StreamWriter<File>> { // {{{
+    fn create_png_writer<'a>(&self, filename: &str) -> png::StreamWriter<'a, File> { // {{{
         let file = File::create(filename).expect("Couldn't open file");
         let mut encoder = Encoder::new(file, self.width as u32, self.height as u32);
         encoder.set_color(ColorType::Rgb);
         encoder.set_depth(BitDepth::Eight);
-        BufWriter::with_capacity(1024 * 1024 /*1MiB*/, encoder.write_header().unwrap().into_stream_writer().unwrap())
+        encoder.write_header().unwrap().into_stream_writer().unwrap()
     } // }}}
 
     fn render(self) { // {{{
@@ -399,7 +402,7 @@ impl Renderer { // {{{
     fn render_arc(self: &Arc<Self>) { // {{{
         let anim = self.frames != 1;
         let frame_area = self.width * self.height;
-        let _total_area = frame_area * self.frames;
+        let total_area = frame_area * self.frames;
 
         // clean frame dir {{{
         if anim {
@@ -412,7 +415,7 @@ impl Renderer { // {{{
         // }}}
 
         // writer(s) {{{
-        let writers: Vec<_> = if anim {
+        let mut writers: Vec<_> = if anim {
             (0..self.frames).map(|frame| {
                 let name = &format!("{}/{}.png", FRAMEDIR, frame);
                 self.create_png_writer(name)
@@ -422,6 +425,76 @@ impl Renderer { // {{{
         };
         // }}}
 
+	// {{{
+	let writers: Arc<Vec<Mutex<_>>> = Arc::new(writers.into_par_iter().map(|w| Mutex::new(w)).collect());
+	let pool = threadpool::Builder::new().build();
+
+	// counter {{{
+	let counter = Arc::new(RelaxedCounter::new(0));
+	let count_jh = thread::spawn({
+	    let counter = Arc::clone(&counter);
+	    let area = self.frames * self.height;
+	    move || {
+		loop {
+		    let count = counter.get();
+		    print!("\r{}% rendered", count * 100 / area);
+		    std::io::stdout().flush().unwrap();
+		    if count == area {
+			break;
+		    }
+		    thread::sleep(Duration::from_millis(1));
+		}
+		println!();
+	    }
+	});
+	// }}}
+
+	let pixels_written = (0..self.frames).map(|_| (Condvar::new(), Mutex::new(0usize))).collect::<Vec<_>>();
+	let pixels_written = Arc::new(pixels_written);
+
+	for y in (0..self.height) { // i represents index of frame_area, not total area
+	    let rndr = Arc::clone(self);
+	    let writers = Arc::clone(&writers);
+	    let counter = Arc::clone(&counter);
+	    let pixels_written = Arc::clone(&pixels_written);
+	    pool.execute(move || {
+		let escapes = (0..rndr.width).map(|x| rndr.calc_aa(x,y)).collect::<Vec<Vec<EscapeTime>>>();
+		for frame in 0..rndr.frames {
+		    let t = frame as f64 / rndr.frames_f;
+		    let pix_row = escapes.iter().map(|escapes| Renderer::colour_to_pixel(rndr.avg_colours(&escapes, t))).collect::<Vec<Pixel>>();
+
+		    // wait for (frame,i);
+		    let mut ready_y = pixels_written[frame].1.lock().unwrap();
+		    while *ready_y != y {
+			ready_y = pixels_written[frame].0.wait(ready_y).unwrap();
+		    }
+
+		    let mut w = writers[frame].lock().unwrap();
+		    for pix in pix_row {
+			w.write(&pix).unwrap();
+		    }
+		    drop(w);
+
+		    // say (frame,i+1) is ready
+		    *ready_y += 1;
+		    pixels_written[frame].0.notify_all();
+
+		    counter.inc();
+		}
+	    });
+	};
+
+	pool.join();
+
+	for writer in writers.iter() {
+	    writer.lock().unwrap().flush().unwrap();
+	}
+
+	count_jh.join().unwrap();
+	// }}}
+
+	/*
+	// all escapes, then all colours and writes {{{
         // escapes {{{
         let esc_count = Arc::new(RwLock::new(0usize));
 
@@ -456,7 +529,7 @@ impl Renderer { // {{{
         assert_eq!(*esc_count.read().unwrap(), self.height);
         // }}}
 
-        // colouring and writing {{{
+        // colouring {{{
         let clr_count = Arc::new(RwLock::new(0usize));
 
         let clr_count_jh = std::thread::spawn({
@@ -477,7 +550,9 @@ impl Renderer { // {{{
                 println!();
             }
         });
+	// }}}
 
+	// writing {{{
         writers.into_par_iter().enumerate().for_each(|(frame, mut writer)| {
             let t = frame as f64 / self.frames_f;
             for y in 0..self.height {
@@ -497,6 +572,8 @@ impl Renderer { // {{{
         clr_count_jh.join().unwrap();
         assert_eq!(*clr_count.read().unwrap(), self.height * self.frames);
         // }}}
+	// }}}
+	*/
     } // }}}
 } // }}}
 
