@@ -5,27 +5,31 @@ extern crate jemallocator;
 #[global_allocator]
 static ALLOC: jemallocator::Jemalloc = jemallocator::Jemalloc;
 
+// use {{{
 use std::{
     env,
     fmt::Debug,
     fs::{ self, File },
-    io::{ Write, BufRead, BufReader, BufWriter },
+    io::{ Read, Write, Seek, BufRead, BufReader, BufWriter },
     sync::{ Arc, Mutex, RwLock, Condvar },
     thread::{ self, JoinHandle },
     str::FromStr,
     path::Path,
     time::Duration,
+    iter::IntoIterator,
 };
 
 use png::{BitDepth, ColorType, Encoder};
 use num::Complex;
 use rayon::prelude::*;
+use rayon::iter::IntoParallelIterator;
 use crossbeam::channel::unbounded;
 use atomic_counter::{ RelaxedCounter, AtomicCounter };
 
 use std::f64::consts::E;
 use std::f64::consts::TAU;
 use std::f64::consts::PI;
+// }}}
 
 type Pixel = [u8; 3];
 type Colour = [f64; 3];
@@ -48,7 +52,53 @@ fn rotate_complex(c: &Complex<f64>, angle: f64, origin: &Complex<f64>) -> Comple
 fn xy_iterator(width: usize, height: usize) -> Vec<(usize,usize)> {
     (0..height).flat_map(move |y| (0..width).map(move |x| {(x,y)})).collect()
 }
+
+fn colour_to_pixel(clr: Colour) -> Pixel {
+    [
+	(clr[0].powf(1.0 / 2.2) * 255.0) as u8,
+	(clr[1].powf(1.0 / 2.2) * 255.0) as u8,
+	(clr[2].powf(1.0 / 2.2) * 255.0) as u8,
+    ]
+}
 // }}}
+
+#[derive(Debug)]
+struct Progress {//{{{
+    count: Arc<RelaxedCounter>,
+    jh: JoinHandle<()>,
+}
+
+impl Progress {
+    fn new(process: &str, total: usize) -> Self {
+	let process = process.to_owned();
+	let count = Arc::new(RelaxedCounter::new(0));
+
+	let jh = thread::spawn({
+	    let counter = Arc::clone(&count);
+	    move || {
+		let dur = Duration::from_millis(1000 / 24);
+		let mut count = 0;
+		while count < total {
+		    print!("\r{}% {}", count * 100 / total, process);
+		    std::io::stdout().flush().unwrap();
+		    thread::sleep(dur);
+		    count = counter.get();
+		}
+		println!("\r100% {}", process);
+	    }
+	});
+
+	Progress{ count, jh }
+    }
+
+    fn inc(&self) {
+	self.count.inc();
+    }
+
+    fn join(self) {
+	self.jh.join().unwrap();
+    }
+}//}}}
 
 #[allow(dead_code)]
 struct Renderer { // {{{
@@ -379,14 +429,6 @@ impl Renderer { // {{{
         sum
     } // }}}
 
-    fn colour_to_pixel(clr: Colour) -> Pixel { // {{{
-        [
-            (clr[0].powf(1.0 / 2.2) * 255.0) as u8,
-            (clr[1].powf(1.0 / 2.2) * 255.0) as u8,
-            (clr[2].powf(1.0 / 2.2) * 255.0) as u8,
-        ]
-    } // }}}
-
     fn create_png_writer<'a>(&self, filename: &str) -> png::StreamWriter<'a, File> { // {{{
         let file = File::create(filename).expect("Couldn't open file");
         let mut encoder = Encoder::new(file, self.width as u32, self.height as u32);
@@ -402,7 +444,8 @@ impl Renderer { // {{{
     fn render_arc(self: &Arc<Self>) { // {{{
         let anim = self.frames != 1;
         let frame_area = self.width * self.height;
-        let total_area = frame_area * self.frames;
+        let _total_area = frame_area * self.frames;
+	let pool = threadpool::Builder::new().build();
 
         // clean frame dir {{{
         if anim {
@@ -415,7 +458,7 @@ impl Renderer { // {{{
         // }}}
 
         // writer(s) {{{
-        let mut writers: Vec<_> = if anim {
+        let writers: Vec<_> = if anim {
             (0..self.frames).map(|frame| {
                 let name = &format!("{}/{}.png", FRAMEDIR, frame);
                 self.create_png_writer(name)
@@ -425,9 +468,69 @@ impl Renderer { // {{{
         };
         // }}}
 
-	// {{{
+	// disk {{{
+	// save escapes to file {{{
+	let disk_progress = Arc::new(Progress::new("calculated", self.height));
+	let escapes_file = Arc::new(Mutex::new(File::create(".escapes").unwrap()));
+	let ready_esc_row = Arc::new((Condvar::new(), Mutex::new(0usize)));
+	for y in 0..self.height {
+	    let rndr = Arc::clone(self);
+	    let disk_progress = Arc::clone(&disk_progress);
+	    let ready_esc_row = Arc::clone(&ready_esc_row);
+	    let escapes_file = Arc::clone(&escapes_file);
+	    pool.execute(move || {
+		// do calculation that doesn't need synchronization
+		let row: Vec<Vec<EscapeTime>> = (0..rndr.width).map(|x| rndr.calc_aa(x,y)).collect();
+		let ser = bincode::serialize(&row).unwrap();
+
+		// wait for y to be ready
+		let mut ready_y = ready_esc_row.1.lock().unwrap();
+		while *ready_y != y {
+		    ready_y = ready_esc_row.0.wait(ready_y).unwrap();
+		}
+
+		// write
+		escapes_file.lock().unwrap().write(&ser).unwrap();
+
+		// make y+1 ready
+		*ready_y += 1;
+		ready_esc_row.0.notify_all();
+		disk_progress.inc();
+	    });
+	}
+	pool.join();
+	drop(escapes_file);
+	Arc::try_unwrap(disk_progress).expect("All clones were given to pool, which has joined, so the count should be 1").join();
+	// }}}
+
+	// load escapes from file and write generated image data {{{
+	let clr_progress = Arc::new(Progress::new("rendered", self.frames * self.height));
+	for (frame, mut writer) in writers.into_iter().enumerate() {
+	    let rndr = Arc::clone(self);
+	    let clr_progress = Arc::clone(&clr_progress);
+	    pool.execute(move || {
+		let t = frame as f64 / rndr.frames_f;
+		let escapes_file = File::open(".escapes").unwrap();
+		for _y in 0..rndr.height {
+		    let esc_row: Vec<Vec<EscapeTime>> = bincode::deserialize_from(&escapes_file).unwrap();
+		    let pix_row: Vec<u8> = esc_row.into_iter()
+			.map(|escapes| rndr.avg_colours(&escapes, t))
+			.map(colour_to_pixel)
+			.flat_map(IntoIterator::into_iter)
+			.collect();
+		    writer.write(&pix_row).unwrap();
+		    clr_progress.inc();
+		}
+	    });
+	}
+	pool.join();
+	Arc::try_unwrap(clr_progress).expect("All clones were given to pool, which has joined, so the count should be 1").join();
+	// }}}
+	// }}}
+
+	/*
+	// (calc a row then render it to each frame) on each thread {{{
 	let writers: Arc<Vec<Mutex<_>>> = Arc::new(writers.into_par_iter().map(|w| Mutex::new(w)).collect());
-	let pool = threadpool::Builder::new().build();
 
 	// counter {{{
 	let counter = Arc::new(RelaxedCounter::new(0));
@@ -452,7 +555,7 @@ impl Renderer { // {{{
 	let pixels_written = (0..self.frames).map(|_| (Condvar::new(), Mutex::new(0usize))).collect::<Vec<_>>();
 	let pixels_written = Arc::new(pixels_written);
 
-	for y in (0..self.height) { // i represents index of frame_area, not total area
+	for y in 0..self.height { // i represents index of frame_area, not total area
 	    let rndr = Arc::clone(self);
 	    let writers = Arc::clone(&writers);
 	    let counter = Arc::clone(&counter);
@@ -492,6 +595,7 @@ impl Renderer { // {{{
 
 	count_jh.join().unwrap();
 	// }}}
+	*/
 
 	/*
 	// all escapes, then all colours and writes {{{
