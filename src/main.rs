@@ -381,7 +381,7 @@ fn main() {
 		    env_or_default("sin_g", 1.0),
 		    env_or_default("sin_b", 1.0),
 		),
-                "palette" => ColourAlgo::Palette(load_palette(env::var("palette").unwrap())),
+                "palette" => ColourAlgo::Palette(Palette::from(env::var("palette").unwrap())),
                 _ => panic!("Couldn't parse clr_algo setting"),
             };
             stg.clr_algo = clr_algo;

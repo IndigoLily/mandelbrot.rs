@@ -153,6 +153,41 @@ impl From<Pixel> for [u8;3] {
 
 
 
+#[derive(Serialize, Deserialize, Clone)]
+#[serde(from="String",into="String")]
+pub struct Palette {
+    pub path: String,
+    pub clrs: Vec<Colour>,
+}
+
+impl From<String> for Palette {
+    fn from(path: String) -> Self {
+	let file = File::open(&path).unwrap();
+	let reader = BufReader::new(file);
+	let clrs = reader.lines().map(|x| x.unwrap().parse().unwrap()).collect();
+	Palette { path, clrs }
+    }
+}
+
+impl From<Palette> for String {
+    fn from(plt: Palette) -> Self {
+	plt.path
+    }
+}
+
+impl Index<usize> for Palette {
+    type Output = Colour;
+    fn index(&self, i: usize) -> &Self::Output {
+	&self.clrs[i]
+    }
+}
+
+impl Palette {
+    pub fn len(&self) -> usize {
+	self.clrs.len()
+    }
+}
+
 #[derive(Clone, Serialize, Deserialize)]
 pub enum ColourAlgo {
     BW,
@@ -161,25 +196,5 @@ pub enum ColourAlgo {
     Bands(f64),
     SineMult(f64, f64, f64),
     SineAdd(f64, f64, f64),
-    Palette(Vec<Colour>),
-}
-
-/*
-pub fn hex_to_rgb(hex: String) -> Colour {
-    let hex = hex.trim_start_matches('#').to_lowercase();
-    if hex.len() != 6 {
-        panic!("RGB hex wrong length");
-    }
-    Colour::from([
-        (u8::from_str_radix(&hex[0..2], 16).unwrap() as f64) / (u8::MAX as f64),
-        (u8::from_str_radix(&hex[2..4], 16).unwrap() as f64) / (u8::MAX as f64),
-        (u8::from_str_radix(&hex[4..6], 16).unwrap() as f64) / (u8::MAX as f64),
-    ]).dec_gamma()
-}
-*/
-
-pub fn load_palette<P: AsRef<std::path::Path>>(path: P) -> Vec<Colour> {
-    let file = File::open(path).unwrap();
-    let reader = BufReader::new(file);
-    reader.lines().map(|x| x.unwrap().parse().unwrap()).collect()
+    Palette(Palette),
 }
