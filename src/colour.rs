@@ -1,5 +1,5 @@
 use serde::{Serialize, Deserialize};
-use std::ops::{ AddAssign, DivAssign };
+use std::ops::{ Add, AddAssign, Div, DivAssign, Index };
 use std::str::FromStr;
 use std::fs::File;
 use std::io::{ BufReader, BufRead };
@@ -91,11 +91,33 @@ impl FromStr for Colour {
     }
 }
 
+impl Add for Colour {
+    type Output = Self;
+    fn add(self, other: Self) -> Self {
+	Colour {
+	    r: self.r + other.r,
+	    g: self.g + other.g,
+	    b: self.b + other.b,
+	}
+    }
+}
+
 impl AddAssign for Colour {
     fn add_assign(&mut self, other: Self) {
 	self.r += other.r;
 	self.g += other.g;
 	self.b += other.b;
+    }
+}
+
+impl Div<f64> for Colour {
+    type Output = Self;
+    fn div(self, n: f64) -> Self::Output {
+	Colour {
+	    r: self.r / n,
+	    g: self.g / n,
+	    b: self.b / n,
+	}
     }
 }
 

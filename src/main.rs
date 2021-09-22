@@ -213,13 +213,9 @@ fn calc_aa(x: usize, y: usize, stg: &Stg) -> Vec<EscapeTime> {
     samples
 }
 
+#[inline]
 fn avg_colours(escapes: &[EscapeTime], t: f64, stg: &Stg) -> Colour {
-    let mut sum: Colour = Default::default();
-    for clr in escapes.iter().map(|e| get_colour(e, t, stg)) {
-	sum += clr;
-    }
-    sum /= stg.aa_sq_f64;
-    sum
+    escapes.iter().fold(Colour::default(), |clr, e| clr + get_colour(e, t, stg)) / stg.aa_sq_f64
 }
 
 fn create_png_writer<'a>(filename: &str, stg: &Stg) -> png::StreamWriter<'a, File> {
