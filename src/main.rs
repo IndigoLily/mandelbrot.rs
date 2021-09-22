@@ -8,18 +8,17 @@ mod colour;
 mod interp;
 mod progress;
 mod settings;
+mod utils;
 
 use std::{
     env,
-    fmt::Debug,
-    fs::{self, File},
     io::Write,
+    fs::{self, File},
     path::Path,
     sync::{Arc, Condvar, Mutex},
 };
 
 use num::Complex;
-use png::{BitDepth, ColorType, Encoder};
 use rayon::iter::IntoParallelIterator;
 use rayon::prelude::*;
 
@@ -30,38 +29,11 @@ use interp::*;
 use progress::*;
 use settings::SettingsBuilder;
 use settings::Settings as Stg;
+use utils::*;
 
 type EscapeTime = Option<f64>;
 
-//const BLACK: Colour = [0.0; 3];
 const FRAMEDIR: &str = "frames";
-
-fn env_or_default<T>(name: &str, default: T) -> T
-where
-    T: std::str::FromStr,
-    <T as std::str::FromStr>::Err: Debug,
-{
-    match env::var(name) {
-        Ok(val) => val
-            .parse()
-            .unwrap_or_else(|_| panic!("Couldn't parse {} setting", name)),
-        Err(_) => default,
-    }
-}
-
-/*
-fn xy_iterator(width: usize, height: usize) -> Vec<(usize, usize)> {
-    (0..height)
-        .flat_map(move |y| (0..width).map(move |x| (x, y)))
-        .collect()
-}
-*/
-
-/// Takes a point in image coordinates, and returns its location in the complex plane
-fn image_to_complex(x: f64, y: f64, stg: &Stg) -> Complex<f64> {
-    let c = (Complex::new(x, y) - Complex::new(stg.width_f64, stg.height_f64) / 2.0) / stg.smaller_f64 * 4.0 / stg.zoom;
-    c * stg.rotation + if stg.julia { stg.julia_ctr } else { stg.center }
-}
 
 // calculate the escape time at a point c in the complex plane
 // if c is in the Mandelbrot set, returns None
@@ -102,17 +74,17 @@ fn get_colour(escape: &EscapeTime, t: f64, stg: &Stg) -> Colour {
             ColourAlgo::Rgb => {
                 let val = (escape + t) % 1.0;
                 if val < 1.0 / 3.0 {
-		    Colour { r: 1.0, g: 0.0, b: 0.0 }
+		    colour::RED
                 } else if val < 2.0 / 3.0 {
-		    Colour { r: 0.0, g: 1.0, b: 0.0 }
+		    colour::GREEN
                 } else {
-		    Colour { r: 0.0, g: 0.0, b: 1.0 }
+		    colour::BLUE
                 }
             }
 
             ColourAlgo::SineMult(r, g, b) => [r,g,b].map(|c| (escape / 2.0 * c + t * TAU).sin() / 2.0 + 0.5).into(),
 
-            ColourAlgo::SineAdd(r, g, b) => [r,g,b].map(|c| (escape * 2.0 + TAU * c + t * TAU).sin() / 2.0 + 0.5).into(),
+            ColourAlgo::SineAdd(r, g, b) => [r,g,b].map(|c| (escape * 2.0 + c * TAU + t * TAU).sin() / 2.0 + 0.5).into(),
 
             ColourAlgo::Palette(colours) => {
                 let escape = escape + t * colours.len() as f64;
@@ -200,7 +172,7 @@ fn get_colour(escape: &EscapeTime, t: f64, stg: &Stg) -> Colour {
 
 fn calc_aa(x: usize, y: usize, stg: &Stg) -> Vec<EscapeTime> {
     let (x, y) = (x as f64, y as f64);
-    let mut samples = Vec::with_capacity(stg.aa * stg.aa);
+    let mut samples = Vec::with_capacity(stg.aa_sq);
     for xaa in 0..stg.aa {
         for yaa in 0..stg.aa {
             let xaa = xaa as f64 / stg.aa_f64;
@@ -217,22 +189,8 @@ fn avg_colours(escapes: &[EscapeTime], t: f64, stg: &Stg) -> Colour {
     escapes.iter().fold(Colour::default(), |clr, e| clr + get_colour(e, t, stg)) / stg.aa_sq_f64
 }
 
-fn create_png_writer<'a>(filename: &str, stg: &Stg) -> png::StreamWriter<'a, File> {
-    let file = File::create(filename).expect("Couldn't open file");
-    let mut encoder = Encoder::new(file, stg.width as u32, stg.height as u32);
-    encoder.set_color(ColorType::Rgb);
-    encoder.set_depth(BitDepth::Eight);
-    encoder
-        .write_header()
-        .unwrap()
-        .into_stream_writer()
-        .unwrap()
-}
-
 fn render(stg: &Arc<Stg>) {
     let anim = stg.frames != 1;
-    let frame_area = stg.width * stg.height;
-    let _total_area = frame_area * stg.frames;
     let pool = threadpool::Builder::new().build();
 
     // clean frame dir
@@ -269,7 +227,6 @@ fn render(stg: &Arc<Stg>) {
     let pixels_written = Arc::new(pixels_written);
 
     for y in 0..stg.height {
-        // i represents index of frame_area, not total area
         let stg = Arc::clone(stg);
         let writers = Arc::clone(&writers);
         let progress = Arc::clone(&progress);
