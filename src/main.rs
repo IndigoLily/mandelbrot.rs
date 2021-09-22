@@ -257,64 +257,6 @@ fn render(stg: &Arc<Stg>) {
         vec![create_png_writer("mandelbrot.png", stg)]
     };
 
-    /* disk
-        // save escapes to file
-        let disk_progress = Arc::new(Progress::new("calculated", stg.height));
-        let escapes_file = Arc::new(Mutex::new(File::create(".escapes").unwrap()));
-        let ready_esc_row = Arc::new((Condvar::new(), Mutex::new(0usize)));
-        for y in 0..stg.height {
-        let rndr = Arc::clone(stg);
-        let disk_progress = Arc::clone(&disk_progress);
-        let ready_esc_row = Arc::clone(&ready_esc_row);
-        let escapes_file = Arc::clone(&escapes_file);
-        pool.execute(move || {
-    // do calculation that doesn't need synchronization
-    let row: Vec<Vec<EscapeTime>> = (0..rndr.width).map(|x| rndr.calc_aa(x,y)).collect();
-    let ser = bincode::serialize(&row).unwrap();
-
-    // wait for y to be ready
-    let mut ready_y = ready_esc_row.1.lock().unwrap();
-    while *ready_y != y {
-    ready_y = ready_esc_row.0.wait(ready_y).unwrap();
-    }
-
-    // write
-    escapes_file.lock().unwrap().write(&ser).unwrap();
-
-    // make y+1 ready
-         *ready_y += 1;
-         ready_esc_row.0.notify_all();
-         disk_progress.inc();
-         });
-         }
-         pool.join();
-         drop(escapes_file);
-         Arc::try_unwrap(disk_progress).expect("All clones were given to pool, which has joined, so the count should be 1").join();
-
-    // load escapes from file and write generated image data
-    let clr_progress = Arc::new(Progress::new("rendered", stg.frames * stg.height));
-    for (frame, mut writer) in writers.into_iter().enumerate() {
-    let rndr = Arc::clone(stg);
-    let clr_progress = Arc::clone(&clr_progress);
-    pool.execute(move || {
-    let t = frame as f64 / rndr.frames_f;
-    let escapes_file = File::open(".escapes").unwrap();
-    for _y in 0..rndr.height {
-    let esc_row: Vec<Vec<EscapeTime>> = bincode::deserialize_from(&escapes_file).unwrap();
-    let pix_row: Vec<u8> = esc_row.into_iter()
-    .map(|escapes| rndr.avg_colours(&escapes, t))
-    .map(colour_to_pixel)
-    .flat_map(IntoIterator::into_iter)
-    .collect();
-    writer.write(&pix_row).unwrap();
-    clr_progress.inc();
-    }
-    });
-    }
-    pool.join();
-    Arc::try_unwrap(clr_progress).expect("All clones were given to pool, which has joined, so the count should be 1").join();
-    */
-
     // (calc a row then render it to each frame) on each thread
     let writers: Arc<Vec<Mutex<_>>> =
         Arc::new(writers.into_par_iter().map(Mutex::new).collect());
