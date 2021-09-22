@@ -160,6 +160,36 @@ fn get_colour(escape: &EscapeTime, t: f64, stg: &Stg) -> Colour {
                             percent,
                         ),
                     ].into(),
+
+		    Interpolation::Hermite => [
+                        hermite_interpolate(
+                            colours[i0].r,
+                            colours[i1].r,
+                            colours[i2].r,
+                            colours[i3].r,
+                            percent,
+			    0.0,
+			    0.0,
+                        ),
+                        hermite_interpolate(
+                            colours[i0].g,
+                            colours[i1].g,
+                            colours[i2].g,
+                            colours[i3].g,
+                            percent,
+			    0.0,
+			    0.0,
+                        ),
+                        hermite_interpolate(
+                            colours[i0].b,
+                            colours[i1].b,
+                            colours[i2].b,
+                            colours[i3].b,
+                            percent,
+			    0.0,
+			    0.0,
+                        ),
+		    ].into(),
                 }
             }
         }
