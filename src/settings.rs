@@ -18,7 +18,7 @@ pub struct SettingsBuilder {
     pub bail: f64,
 
     pub zoom: f64,
-    pub angle: f64,
+    pub degrees: f64,
     pub ctr_x: f64,
     pub ctr_y: f64,
 
@@ -50,7 +50,7 @@ impl Default for SettingsBuilder {
 	    bail: 20.0,
 
 	    zoom: 1.0,
-	    angle: 0.0,
+	    degrees: 0.0,
 	    ctr_x: 0.0,
 	    ctr_y: 0.0,
 
@@ -99,9 +99,13 @@ impl SettingsBuilder {
 
 	let bail = self.bail;
 	let bail_sq = bail * bail;
+	let bail_ln = bail.ln();
 
 	let zoom = self.zoom;
-	let angle = self.angle;
+	let rotation = {
+	    let radians = self.degrees / 360.0 * std::f64::consts::TAU;
+	    Complex::new(radians.cos(), radians.sin())
+	};
 	let center = Complex::new(self.ctr_x, self.ctr_y);
 
 	let julia = self.julia;
@@ -129,7 +133,7 @@ impl SettingsBuilder {
 
 	Settings {
 	    width, width_f64, height, height_f64, smaller, smaller_f64, frame_area, frames, frames_f64, total_area, start_t,
-	    aa, aa_f64, aa_sq, aa_sq_f64, max_itr, bail, bail_sq, zoom, angle, center, julia, julia_ctr, clr_algo, interp, inside, speed, acc, threads,
+	    aa, aa_f64, aa_sq, aa_sq_f64, max_itr, bail, bail_sq, bail_ln, zoom, rotation, center, julia, julia_ctr, clr_algo, interp, inside, speed, acc, threads,
 	}
     }
 }
@@ -164,9 +168,10 @@ pub struct Settings {
 
     pub bail: f64,
     pub bail_sq: f64,
+    pub bail_ln: f64,
 
     pub zoom: f64,
-    pub angle: f64,
+    pub rotation: Complex<f64>,
     pub center: Complex<f64>,
 
     pub julia: bool,

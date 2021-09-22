@@ -23,7 +23,6 @@ use png::{BitDepth, ColorType, Encoder};
 use rayon::iter::IntoParallelIterator;
 use rayon::prelude::*;
 
-use std::f64::consts::E;
 use std::f64::consts::TAU;
 
 use colour::*;
@@ -36,15 +35,6 @@ type EscapeTime = Option<f64>;
 
 //const BLACK: Colour = [0.0; 3];
 const FRAMEDIR: &str = "frames";
-
-fn deg_to_rad(deg: f64) -> f64 {
-    deg / 360.0 * TAU
-}
-
-fn rotate_complex(c: &Complex<f64>, angle: f64, origin: &Complex<f64>) -> Complex<f64> {
-    let angle = deg_to_rad(angle);
-    (c - origin) * Complex::new(angle.cos(), angle.sin()) + origin
-}
 
 fn env_or_default<T>(name: &str, default: T) -> T
 where
@@ -69,36 +59,25 @@ fn xy_iterator(width: usize, height: usize) -> Vec<(usize, usize)> {
 
 /// Takes a point in image coordinates, and returns its location in the complex plane
 fn image_to_complex(x: f64, y: f64, stg: &Stg) -> Complex<f64> {
-    let c = (Complex::new(x, y) - Complex::new(stg.width_f64, stg.height_f64) / 2.0) / stg.smaller_f64
-        * 4.0
-        / stg.zoom;
-    if stg.julia {
-        rotate_complex(&c, stg.angle, &Complex::new(0.0, 0.0)) + stg.julia_ctr
-    } else {
-        c + stg.center
-    }
+    let c = (Complex::new(x, y) - Complex::new(stg.width_f64, stg.height_f64) / 2.0) / stg.smaller_f64 * 4.0 / stg.zoom;
+    c * stg.rotation + if stg.julia { stg.julia_ctr } else { stg.center }
 }
 
 // calculate the escape time at a point c in the complex plane
 // if c is in the Mandelbrot set, returns None
 fn calc_at(c: Complex<f64>, stg: &Stg) -> EscapeTime {
     let mut z = c;
-    let mut itr = 1;
+    let c = if stg.julia { stg.center } else { c };
 
-    loop {
-        z = z * z + if stg.julia { stg.center } else { c };
+    for itr in 1..=stg.max_itr {
+        z = z * z + c;
 
         if z.norm_sqr() > stg.bail_sq {
-            let itr = itr as f64;
-            return Some(itr - (z.norm().log(E) / stg.bail.log(E)).log(2.0));
-        }
-
-        itr += 1;
-
-        if itr >= stg.max_itr {
-            return None;
+            return Some(itr as f64 - (z.norm().ln() / stg.bail_ln).log2());
         }
     }
+
+    None
 }
 
 fn get_colour(escape: &EscapeTime, t: f64, stg: &Stg) -> Colour {
@@ -106,7 +85,7 @@ fn get_colour(escape: &EscapeTime, t: f64, stg: &Stg) -> Colour {
         let escape = escape.powf(stg.acc) * stg.speed;
 
         match &stg.clr_algo {
-            ColourAlgo::BW => [1.0;3].into(),
+            ColourAlgo::BW => Colour::from([1.0;3]),
 
             ColourAlgo::Grey => {
                 let val = (escape * 2.0 + t * TAU).sin() / 2.0 + 0.5;
@@ -345,7 +324,7 @@ fn main() {
 	setting!(bail);
 
 	setting!(zoom);
-	setting!(angle);
+	setting!(degrees);
 	setting!(ctr_x);
 	setting!(ctr_y);
 
