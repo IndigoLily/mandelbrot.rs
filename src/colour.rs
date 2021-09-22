@@ -129,6 +129,9 @@ impl DivAssign<f64> for Colour {
     }
 }
 
+pub const BLACK: Colour = Colour { r: 0.0, g: 0.0, b: 0.0 };
+pub const WHITE: Colour = Colour { r: 1.0, g: 1.0, b: 1.0 };
+
 
 
 pub struct Pixel { r: u8, g: u8, b: u8 }

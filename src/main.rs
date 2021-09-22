@@ -73,7 +73,8 @@ fn calc_at(c: Complex<f64>, stg: &Stg) -> EscapeTime {
         z = z * z + c;
 
         if z.norm_sqr() > stg.bail_sq {
-            return Some(itr as f64 - (z.norm().ln() / stg.bail_ln).log2());
+	    let smooth = itr as f64 - (z.norm().ln() / stg.bail_ln).log2();
+            return Some(smooth.powf(stg.acc) * stg.speed);
         }
     }
 
@@ -82,10 +83,8 @@ fn calc_at(c: Complex<f64>, stg: &Stg) -> EscapeTime {
 
 fn get_colour(escape: &EscapeTime, t: f64, stg: &Stg) -> Colour {
     if let Some(escape) = escape {
-        let escape = escape.powf(stg.acc) * stg.speed;
-
         match &stg.clr_algo {
-            ColourAlgo::BW => Colour::from([1.0;3]),
+            ColourAlgo::BW => colour::WHITE,
 
             ColourAlgo::Grey => {
                 let val = (escape * 2.0 + t * TAU).sin() / 2.0 + 0.5;
@@ -93,36 +92,27 @@ fn get_colour(escape: &EscapeTime, t: f64, stg: &Stg) -> Colour {
             }
 
             ColourAlgo::Bands(size) => {
-                let val = if (escape + t).rem_euclid(1.0) < *size {
-                    1.0
+                if (escape + t).rem_euclid(1.0) < *size {
+		    WHITE
                 } else {
-                    0.0
-                };
-                [val; 3].into()
+		    BLACK
+                }
             }
 
             ColourAlgo::Rgb => {
                 let val = (escape + t) % 1.0;
                 if val < 1.0 / 3.0 {
-                    [1.0, 0.0, 0.0]
+		    Colour { r: 1.0, g: 0.0, b: 0.0 }
                 } else if val < 2.0 / 3.0 {
-                    [0.0, 1.0, 0.0]
+		    Colour { r: 0.0, g: 1.0, b: 0.0 }
                 } else {
-                    [0.0, 0.0, 1.0]
-                }.into()
+		    Colour { r: 0.0, g: 0.0, b: 1.0 }
+                }
             }
 
-            ColourAlgo::SineMult(r, g, b) => [
-                (escape / 2.0 * r + t * TAU).sin() / 2.0 + 0.5,
-                (escape / 2.0 * g + t * TAU).sin() / 2.0 + 0.5,
-                (escape / 2.0 * b + t * TAU).sin() / 2.0 + 0.5,
-            ].into(),
+            ColourAlgo::SineMult(r, g, b) => [r,g,b].map(|c| (escape / 2.0 * c + t * TAU).sin() / 2.0 + 0.5).into(),
 
-            ColourAlgo::SineAdd(r, g, b) => [
-                (escape * 2.0 + TAU * r + t * TAU).sin() / 2.0 + 0.5,
-                (escape * 2.0 + TAU * g + t * TAU).sin() / 2.0 + 0.5,
-                (escape * 2.0 + TAU * b + t * TAU).sin() / 2.0 + 0.5,
-            ].into(),
+            ColourAlgo::SineAdd(r, g, b) => [r,g,b].map(|c| (escape * 2.0 + TAU * c + t * TAU).sin() / 2.0 + 0.5).into(),
 
             ColourAlgo::Palette(colours) => {
                 let escape = escape + t * colours.len() as f64;
