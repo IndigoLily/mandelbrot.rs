@@ -9,13 +9,13 @@ edition = "2021"
 [dependencies]
 png = "~0.17"
 num = "0.4.0"
-jemallocator = "0.3.0"
+#jemallocator = "0.3.0"
 rayon = "1.5.1"
 crossbeam = "*"
 atomic-counter = "*"
 threadpool = "1.8.1"
 serde = { version = "1.0.130", features = ["derive"] }
-serde_json = "1.0.68"
+ron = "0.6.5"
 
 [profile.release]
 lto = "fat"
