@@ -17,8 +17,8 @@ use std::{
 use rayon::iter::IntoParallelIterator;
 use rayon::prelude::*;
 
-use mandelbrot::*;
-use mandelbrot::colour::Pixel;
+use librot_rs::*;
+use librot_rs::colour::Pixel;
 use settings::{ Settings as Stg, SettingsBuilder };
 
 mod progress;
