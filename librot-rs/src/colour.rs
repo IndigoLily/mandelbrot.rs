@@ -265,10 +265,53 @@ impl FromStr for ColourAlgo {
     type Err = String;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
+        use regex::Regex;
+
         Ok(match s.to_lowercase().as_str() {
             "bw" => ColourAlgo::BW,
             "grey" | "gray" => ColourAlgo::Grey,
-            _ => return Err("".into()),
+            "rgb" => ColourAlgo::Rgb,
+            s => {
+                return if let Some(caps) =
+                    Regex::new(r"^bands\((\d+\.?\d*)\)$").unwrap().captures(s)
+                {
+                    if let Ok(f) = caps.get(1).unwrap().as_str().parse() {
+                        Ok(ColourAlgo::Bands(f))
+                    } else {
+                        Err("Error parsing number in bands".into())
+                    }
+                } else if let Some(caps) =
+                    Regex::new(r"^sinemult\((\d+\.?\d*),(\d+\.?\d*),(\d+\.?\d*)\)$")
+                        .unwrap()
+                        .captures(s)
+                {
+                    if let (Ok(r), Ok(g), Ok(b)) = (
+                        caps.get(1).unwrap().as_str().parse(),
+                        caps.get(2).unwrap().as_str().parse(),
+                        caps.get(3).unwrap().as_str().parse(),
+                    ) {
+                        Ok(ColourAlgo::SineMult(r, g, b))
+                    } else {
+                        Err("Error parsing numbers in sinemult".into())
+                    }
+                } else if let Some(caps) =
+                    Regex::new(r"^sineadd\((\d+\.?\d*),(\d+\.?\d*),(\d+\.?\d*)\)$")
+                        .unwrap()
+                        .captures(s)
+                {
+                    if let (Ok(r), Ok(g), Ok(b)) = (
+                        caps.get(1).unwrap().as_str().parse(),
+                        caps.get(2).unwrap().as_str().parse(),
+                        caps.get(3).unwrap().as_str().parse(),
+                    ) {
+                        Ok(ColourAlgo::SineAdd(r, g, b))
+                    } else {
+                        Err("Error parsing numbers in sineadd".into())
+                    }
+                } else {
+                    Err("".into())
+                }
+            },
         })
     }
 }

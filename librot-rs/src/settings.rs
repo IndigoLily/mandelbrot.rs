@@ -16,13 +16,19 @@ pub struct SettingsBuilder {
     #[clap(short, long, default_value_t = 1080)]
     pub height: usize,
 
-    #[clap(short, long, default_value_t = 1)]
-    pub frames: usize,
+    #[clap(short = 'x', long, default_value_t = 0.0)]
+    pub ctr_x: f64,
 
-    #[clap(short='t', long, default_value_t = 0.0)]
-    pub start_time: f64,
+    #[clap(short = 'y', long, default_value_t = 0.0)]
+    pub ctr_y: f64,
 
-    #[clap(short='a', long, default_value_t = 1, name="ANTI_ALIASING")]
+    #[clap(short, long, default_value_t = 1.0)]
+    pub zoom: f64,
+
+    #[clap(short, long, default_value_t = 0.0)]
+    pub degrees: f64,
+
+    #[clap(short = 'a', long, default_value_t = 1, name = "ANTI_ALIASING")]
     pub aa: usize,
 
     #[clap(short, long, default_value_t = 1000, name = "MAX_ITERATIONS")]
@@ -32,25 +38,10 @@ pub struct SettingsBuilder {
     pub bail: f64,
 
     #[clap(short, long, default_value_t = 1.0)]
-    pub zoom: f64,
+    pub speed: f64,
 
-    #[clap(short, long, default_value_t = 0.0)]
-    pub degrees: f64,
-
-    #[clap(short='x', long, default_value_t = 0.0)]
-    pub ctr_x: f64,
-
-    #[clap(short='y', long, default_value_t = 0.0)]
-    pub ctr_y: f64,
-
-    #[clap(short, long)]
-    pub julia: bool,
-
-    #[clap(long="julia_x", default_value_t = 0.0)]
-    pub julia_ctr_x: f64,
-
-    #[clap(long="julia_y", default_value_t = 0.0)]
-    pub julia_ctr_y: f64,
+    #[clap(short = 'A', long, default_value_t = 1.0, name = "ACCELERATION")]
+    pub acc: f64,
 
     #[clap(long, default_value_t = ColourAlgo::BW, name="COLOUR_ALGORITHM")]
     pub clr_algo: ColourAlgo,
@@ -58,17 +49,26 @@ pub struct SettingsBuilder {
     #[clap(short='i', long, default_value_t = Interpolation::None)]
     pub interp: Interpolation,
 
-    #[clap(short='I', long, default_value = "#000000")]
+    #[clap(short = 'I', long, default_value = "#000000")]
     pub inside: Colour,
 
-    #[clap(short, long, default_value_t = 1.0)]
-    pub speed: f64,
+    #[clap(short, long, default_value_t = 1)]
+    pub frames: usize,
 
-    #[clap(short='A', long, default_value_t = 1.0, name="ACCELERATION")]
-    pub acc: f64,
+    #[clap(short = 't', long, default_value_t = 0.0)]
+    pub start_time: f64,
+
+    #[clap(short, long)]
+    pub julia: bool,
+
+    #[clap(long = "julia_x", default_value_t = 0.0)]
+    pub julia_ctr_x: f64,
+
+    #[clap(long = "julia_y", default_value_t = 0.0)]
+    pub julia_ctr_y: f64,
 
     #[serde(skip_serializing_if = "Option::is_none")]
-    #[clap(short='T',long)]
+    #[clap(short = 'T', long)]
     pub threads: Option<usize>,
 }
 
