@@ -10,17 +10,23 @@ pub enum Interpolation {
     Hermite,
 }
 
-impl std::str::FromStr for Interpolation {
-    type Err = ();
+impl std::fmt::Display for Interpolation {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{:?}", self)
+    }
+}
 
-    fn from_str(s: &str) -> Result<Interpolation, ()> {
+impl std::str::FromStr for Interpolation {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Interpolation, Self::Err> {
         match s.to_lowercase().as_str() {
             "none" | "const" => Ok(Interpolation::None),
             "linear" | "lerp" => Ok(Interpolation::Linear),
             "cos" | "cosine" => Ok(Interpolation::Cosine),
             "cubic" => Ok(Interpolation::Cubic),
             "hermite" => Ok(Interpolation::Hermite),
-            _ => Err(()),
+            _ => Err("".into()),
         }
     }
 }
@@ -57,10 +63,10 @@ pub fn hermite_interpolate(
     let mu2 = mu * mu;
     let mu3 = mu2 * mu;
 
-    let m0 =      (y1 - y0) * (1.0 + bias) * (1.0 - tension) / 2.0;
+    let m0 = (y1 - y0) * (1.0 + bias) * (1.0 - tension) / 2.0;
     let m0 = m0 + (y2 - y1) * (1.0 - bias) * (1.0 - tension) / 2.0;
 
-    let m1 =      (y2 - y1) * (1.0 + bias) * (1.0 - tension) / 2.0;
+    let m1 = (y2 - y1) * (1.0 + bias) * (1.0 - tension) / 2.0;
     let m1 = m1 + (y3 - y2) * (1.0 - bias) * (1.0 - tension) / 2.0;
 
     let a0 = 2.0 * mu3 - 3.0 * mu2 + 1.0;

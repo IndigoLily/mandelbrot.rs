@@ -1,8 +1,8 @@
 use std::sync::Arc;
-use std::thread::{ self, sleep, JoinHandle };
+use std::thread::{self, sleep, JoinHandle};
 use std::time::Duration;
 use std::io::Write;
-use atomic_counter::{ RelaxedCounter, AtomicCounter };
+use atomic_counter::{RelaxedCounter, AtomicCounter};
 
 #[derive(Debug)]
 pub struct Progress {

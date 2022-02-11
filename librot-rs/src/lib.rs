@@ -15,7 +15,10 @@ pub type Stg = Settings;
 
 /// Takes a point in image coordinates, and returns its location in the complex plane
 pub fn image_to_complex(x: f64, y: f64, stg: &Stg) -> Complex<f64> {
-    let c = (Complex::new(x, y) - Complex::new(stg.width_f64, stg.height_f64) / 2.0) / stg.smaller_f64 * 4.0 / stg.zoom;
+    let c = (Complex::new(x, y) - Complex::new(stg.width_f64, stg.height_f64) / 2.0) /
+        stg.smaller_f64 *
+        4.0 /
+        stg.zoom;
     c * stg.rotation + if stg.julia { stg.julia_ctr } else { stg.center }
 }
 
@@ -29,7 +32,7 @@ pub fn calc_at(c: Complex<f64>, stg: &Stg) -> EscapeTime {
         z = z * z + c;
 
         if z.norm_sqr() > stg.bail_sq {
-	    let smooth = itr as f64 - (z.norm().ln() / stg.bail_ln).log2();
+            let smooth = itr as f64 - (z.norm().ln() / stg.bail_ln).log2();
             return Some(smooth.powf(stg.acc) * stg.speed);
         }
     }
@@ -45,30 +48,34 @@ pub fn get_colour(escape: &EscapeTime, t: f64, stg: &Stg) -> Colour {
             ColourAlgo::Grey => {
                 let val = (escape * 2.0 + t * TAU).sin() / 2.0 + 0.5;
                 Colour::from([val; 3]).enc_gamma()
-            }
+            },
 
             ColourAlgo::Bands(size) => {
                 if (escape + t).rem_euclid(1.0) < *size {
-		    WHITE
+                    WHITE
                 } else {
-		    BLACK
+                    BLACK
                 }
-            }
+            },
 
             ColourAlgo::Rgb => {
                 let val = (escape + t).rem_euclid(1.0);
                 if val < 1.0 / 3.0 {
-		    colour::RED
+                    colour::RED
                 } else if val < 2.0 / 3.0 {
-		    colour::GREEN
+                    colour::GREEN
                 } else {
-		    colour::BLUE
+                    colour::BLUE
                 }
-            }
+            },
 
-            ColourAlgo::SineMult(r, g, b) => [r,g,b].map(|c| (escape / 2.0 * c + t * TAU).sin() / 2.0 + 0.5).into(),
+            ColourAlgo::SineMult(r, g, b) => [r, g, b]
+                .map(|c| (escape / 2.0 * c + t * TAU).sin() / 2.0 + 0.5)
+                .into(),
 
-            ColourAlgo::SineAdd(r, g, b) => [r,g,b].map(|c| (escape * 2.0 + c * TAU + t * TAU).sin() / 2.0 + 0.5).into(),
+            ColourAlgo::SineAdd(r, g, b) => [r, g, b]
+                .map(|c| (escape * 2.0 + c * TAU + t * TAU).sin() / 2.0 + 0.5)
+                .into(),
 
             ColourAlgo::Palette(colours) => {
                 let escape = escape + t * colours.len() as f64;
@@ -85,13 +92,15 @@ pub fn get_colour(escape: &EscapeTime, t: f64, stg: &Stg) -> Colour {
                         linear_interpolate(colours[i1].r, colours[i2].r, percent),
                         linear_interpolate(colours[i1].g, colours[i2].g, percent),
                         linear_interpolate(colours[i1].b, colours[i2].b, percent),
-                    ].into(),
+                    ]
+                    .into(),
 
                     Interpolation::Cosine => [
                         cosine_interpolate(colours[i1].r, colours[i2].r, percent),
                         cosine_interpolate(colours[i1].g, colours[i2].g, percent),
                         cosine_interpolate(colours[i1].b, colours[i2].b, percent),
-                    ].into(),
+                    ]
+                    .into(),
 
                     Interpolation::Cubic => [
                         cubic_interpolate(
@@ -115,17 +124,18 @@ pub fn get_colour(escape: &EscapeTime, t: f64, stg: &Stg) -> Colour {
                             colours[i3].b,
                             percent,
                         ),
-                    ].into(),
+                    ]
+                    .into(),
 
-		    Interpolation::Hermite => [
+                    Interpolation::Hermite => [
                         hermite_interpolate(
                             colours[i0].r,
                             colours[i1].r,
                             colours[i2].r,
                             colours[i3].r,
                             percent,
-			    0.0,
-			    0.0,
+                            0.0,
+                            0.0,
                         ),
                         hermite_interpolate(
                             colours[i0].g,
@@ -133,8 +143,8 @@ pub fn get_colour(escape: &EscapeTime, t: f64, stg: &Stg) -> Colour {
                             colours[i2].g,
                             colours[i3].g,
                             percent,
-			    0.0,
-			    0.0,
+                            0.0,
+                            0.0,
                         ),
                         hermite_interpolate(
                             colours[i0].b,
@@ -142,12 +152,13 @@ pub fn get_colour(escape: &EscapeTime, t: f64, stg: &Stg) -> Colour {
                             colours[i2].b,
                             colours[i3].b,
                             percent,
-			    0.0,
-			    0.0,
+                            0.0,
+                            0.0,
                         ),
-		    ].into(),
+                    ]
+                    .into(),
                 }
-            }
+            },
         }
     } else {
         stg.inside
@@ -161,7 +172,7 @@ pub fn calc_aa(x: usize, y: usize, stg: &Stg) -> Vec<EscapeTime> {
         for yaa in 0..stg.aa {
             let xaa = xaa as f64 / stg.aa_f64;
             let yaa = yaa as f64 / stg.aa_f64;
-	    
+
             samples.push(calc_at(image_to_complex(x + xaa, y + yaa, stg), stg));
         }
     }
@@ -170,5 +181,8 @@ pub fn calc_aa(x: usize, y: usize, stg: &Stg) -> Vec<EscapeTime> {
 
 #[inline]
 pub fn avg_colours(escapes: &[EscapeTime], t: f64, stg: &Stg) -> Colour {
-    escapes.iter().fold(Colour::default(), |clr, e| clr + get_colour(e, t, stg)) / stg.aa_sq_f64
+    escapes
+        .iter()
+        .fold(Colour::default(), |clr, e| clr + get_colour(e, t, stg)) /
+        stg.aa_sq_f64
 }

@@ -13,18 +13,18 @@ where
     <T as FromStr>::Err: Debug,
 {
     match std::env::var(name) {
-	Ok(val) => val
-	    .parse()
-	    .unwrap_or_else(|_| panic!("Couldn't parse {} setting", name)),
-	Err(_) => default,
+        Ok(val) => val
+            .parse()
+            .unwrap_or_else(|_| panic!("Couldn't parse {} setting", name)),
+        Err(_) => default,
     }
 }
 
 #[allow(dead_code)]
 pub fn xy_iterator(width: usize, height: usize) -> Vec<(usize, usize)> {
     (0..height)
-	.flat_map(move |y| (0..width).map(move |x| (x, y)))
-	.collect()
+        .flat_map(move |y| (0..width).map(move |x| (x, y)))
+        .collect()
 }
 
 pub fn create_png_writer<'a>(filename: &str, stg: &Stg) -> png::StreamWriter<'a, File> {

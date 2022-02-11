@@ -19,7 +19,7 @@ use rayon::prelude::*;
 
 use librot_rs::*;
 use librot_rs::colour::Pixel;
-use settings::{ Settings as Stg, SettingsBuilder };
+use settings::{Settings as Stg, SettingsBuilder, Parser};
 
 mod progress;
 mod utils;
@@ -44,10 +44,10 @@ fn render(stg: &Arc<Stg>) {
 
     // writer(s)
     let writers: Vec<_> = if anim {
-	let len = stg.frames.to_string().len();
+        let len = stg.frames.to_string().len();
         (0..stg.frames)
             .map(|frame| {
-                let name = &format!("{}/{:0>len$}.png", FRAMEDIR, frame, len=len);
+                let name = &format!("{}/{:0>len$}.png", FRAMEDIR, frame, len = len);
                 create_png_writer(name, stg)
             })
             .collect()
@@ -56,8 +56,7 @@ fn render(stg: &Arc<Stg>) {
     };
 
     // (calc a row then render it to each frame) on each thread
-    let writers: Arc<Vec<Mutex<_>>> =
-        Arc::new(writers.into_par_iter().map(Mutex::new).collect());
+    let writers: Arc<Vec<Mutex<_>>> = Arc::new(writers.into_par_iter().map(Mutex::new).collect());
 
     let progress = Arc::new(Progress::new("rendering", stg.height * stg.frames));
 
@@ -85,7 +84,7 @@ fn render(stg: &Arc<Stg>) {
                     .collect::<Vec<Pixel>>();
 
                 // wait for (frame,i)
-		#[allow(clippy::mutex_atomic)]
+                #[allow(clippy::mutex_atomic)]
                 let mut ready_y = pixels_written[frame].1.lock().unwrap();
                 while *ready_y != y {
                     ready_y = pixels_written[frame].0.wait(ready_y).unwrap();
@@ -93,7 +92,7 @@ fn render(stg: &Arc<Stg>) {
 
                 let mut w = writers[frame].lock().unwrap();
                 for pix in pix_row {
-                    w.write_all(&<[u8;3]>::from(pix)).unwrap();
+                    w.write_all(&<[u8; 3]>::from(pix)).unwrap();
                 }
                 drop(w); // explicitly drop to make lock available as soon as possible
 
@@ -118,11 +117,13 @@ fn render(stg: &Arc<Stg>) {
 }
 
 fn main() {
-    let stgb = if let Some(path) = env::args().nth(1) {
-	ron::de::from_reader(File::open(path).unwrap()).unwrap()
-    } else {
-	SettingsBuilder::default()
-    };
+    //let stgb = if let Some(path) = env::args().nth(1) {
+    //    ron::de::from_reader(File::open(path).unwrap()).unwrap()
+    //} else {
+    //    SettingsBuilder::default()
+    //};
+
+    let stgb = SettingsBuilder::parse();
 
     let stg = Arc::new(stgb.build());
     render(&stg);
