@@ -8,6 +8,7 @@ pub use clap::Parser;
 
 #[derive(Serialize, Deserialize, Parser)]
 #[serde(default)]
+#[clap(global_settings = &[clap::AppSettings::DeriveDisplayOrder])]
 pub struct SettingsBuilder {
     #[clap(short, long, default_value_t = 1920)]
     pub width: usize,
@@ -18,13 +19,13 @@ pub struct SettingsBuilder {
     #[clap(short, long, default_value_t = 1)]
     pub frames: usize,
 
-    #[clap(long, default_value_t = 0.0)]
-    pub start_t: f64,
+    #[clap(short='t', long, default_value_t = 0.0)]
+    pub start_time: f64,
 
-    #[clap(long, default_value_t = 1)]
+    #[clap(short='a', long, default_value_t = 1, name="ANTI_ALIASING")]
     pub aa: usize,
 
-    #[clap(short, long, default_value_t = 1000)]
+    #[clap(short, long, default_value_t = 1000, name = "MAX_ITERATIONS")]
     pub max_itr: usize,
 
     #[clap(short, long, default_value_t = 20.0)]
@@ -36,37 +37,38 @@ pub struct SettingsBuilder {
     #[clap(short, long, default_value_t = 0.0)]
     pub degrees: f64,
 
-    #[clap(name = "x", default_value_t = 0.0)]
+    #[clap(short='x', long, default_value_t = 0.0)]
     pub ctr_x: f64,
 
-    #[clap(name = "y", default_value_t = 0.0)]
+    #[clap(short='y', long, default_value_t = 0.0)]
     pub ctr_y: f64,
 
     #[clap(short, long)]
     pub julia: bool,
 
-    #[clap(long, default_value_t = 0.0)]
+    #[clap(long="julia_x", default_value_t = 0.0)]
     pub julia_ctr_x: f64,
 
-    #[clap(long, default_value_t = 0.0)]
+    #[clap(long="julia_y", default_value_t = 0.0)]
     pub julia_ctr_y: f64,
 
-    #[clap(long, default_value_t = ColourAlgo::BW)]
+    #[clap(long, default_value_t = ColourAlgo::BW, name="COLOUR_ALGORITHM")]
     pub clr_algo: ColourAlgo,
 
-    #[clap(long, default_value_t = Interpolation::None)]
+    #[clap(short='i', long, default_value_t = Interpolation::None)]
     pub interp: Interpolation,
 
-    #[clap(long, default_value = "#000000")]
+    #[clap(short='I', long, default_value = "#000000")]
     pub inside: Colour,
 
     #[clap(short, long, default_value_t = 1.0)]
     pub speed: f64,
 
-    #[clap(long, default_value_t = 1.0)]
+    #[clap(short='A', long, default_value_t = 1.0, name="ACCELERATION")]
     pub acc: f64,
 
     #[serde(skip_serializing_if = "Option::is_none")]
+    #[clap(short='T',long)]
     pub threads: Option<usize>,
 }
 
@@ -77,7 +79,7 @@ impl Default for SettingsBuilder {
             height: 640,
             frames: 1,
 
-            start_t: 0.0,
+            start_time: 0.0,
 
             aa: 1,
             max_itr: 1000,
@@ -121,7 +123,7 @@ impl SettingsBuilder {
 
         let total_area = frame_area * frames;
 
-        let start_t = self.start_t;
+        let start_t = self.start_time;
 
         let aa = self.aa;
         let aa_f64 = aa as f64;
