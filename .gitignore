@@ -1,6 +1,7 @@
-/target
+target/
 *.gif
 *.png
 *.webm
 *.mp4
+*.ron
 bookmark*

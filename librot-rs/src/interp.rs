@@ -1,7 +1,8 @@
+use clap::ArgEnum;
 use serde::{Deserialize, Serialize};
 use std::f64::consts::PI;
 
-#[derive(Copy, Clone, Debug, Serialize, Deserialize)]
+#[derive(Copy, Clone, Debug, Serialize, Deserialize, ArgEnum)]
 pub enum Interpolation {
     None,
     Linear,

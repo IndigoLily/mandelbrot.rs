@@ -11,3 +11,4 @@ serde = { version = "1.0.130", features = ["derive"] }
 ron = "0.6.5"
 clap = { version = "3.0.14", features = ["derive"] }
 regex = "1.5.4"
+palette = { version = "0.6.0", features = ["serde"] }

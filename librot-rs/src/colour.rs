@@ -1,79 +1,24 @@
 use std::fmt::Display;
+use std::marker::PhantomData;
 use std::ops::{Add, AddAssign, Div, DivAssign, Index};
 use std::str::FromStr;
 use std::fs::File;
 use std::io::{BufReader, BufRead};
 
+use palette::rgb::Rgb;
+use palette::rgb::channels::Argb;
 use serde::{Serialize, Deserialize};
 
-#[inline]
-fn enc_gamma(n: f64) -> f64 {
-    n.powf(1.0 / 2.2)
-}
+pub use palette::{Pixel, Srgb, rgb::RgbStandard, encoding};
+pub type LinSrgb = palette::LinSrgb<f64>;
 
-#[inline]
-fn dec_gamma(n: f64) -> f64 {
-    n.powf(2.2)
-}
+pub const BLACK: LinSrgb = palette::rgb::Rgb{ red: 0.0, green: 0.0, blue: 0.0, standard: PhantomData };
+pub const WHITE: LinSrgb = palette::rgb::Rgb{ red: 1.0, green: 1.0, blue: 1.0, standard: PhantomData };
+pub const RED:   LinSrgb = palette::rgb::Rgb{ red: 1.0, green: 0.0, blue: 0.0, standard: PhantomData };
+pub const GREEN: LinSrgb = palette::rgb::Rgb{ red: 0.0, green: 1.0, blue: 0.0, standard: PhantomData };
+pub const BLUE:  LinSrgb = palette::rgb::Rgb{ red: 0.0, green: 0.0, blue: 1.0, standard: PhantomData };
 
-#[derive(Debug, Copy, Clone, Default, Serialize, Deserialize)]
-#[serde(from = "String", into = "String")]
-pub struct Colour {
-    pub r: f64,
-    pub g: f64,
-    pub b: f64,
-}
-
-impl Display for Colour {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{:?}", self)
-    }
-}
-
-impl Colour {
-    pub fn enc_gamma(mut self) -> Self {
-        self.r = enc_gamma(self.r);
-        self.g = enc_gamma(self.g);
-        self.b = enc_gamma(self.b);
-        self
-    }
-
-    pub fn dec_gamma(mut self) -> Self {
-        self.r = dec_gamma(self.r);
-        self.g = dec_gamma(self.g);
-        self.b = dec_gamma(self.b);
-        self
-    }
-}
-
-impl From<[f64; 3]> for Colour {
-    fn from(arr: [f64; 3]) -> Self {
-        Colour {
-            r: arr[0],
-            g: arr[1],
-            b: arr[2],
-        }
-    }
-}
-
-impl From<String> for Colour {
-    fn from(hex: String) -> Self {
-        hex.parse().unwrap()
-    }
-}
-
-impl From<Colour> for String {
-    fn from(clr: Colour) -> Self {
-        let clr = clr.enc_gamma();
-        format!(
-            "#{:02X?}{:02X?}{:02X?}",
-            (clr.r * (u8::MAX as f64)) as u8,
-            (clr.g * (u8::MAX as f64)) as u8,
-            (clr.b * (u8::MAX as f64)) as u8,
-        )
-    }
-}
-
+/*
 #[derive(Debug)]
 pub enum ParseColourError {
     UnsupportedLength,
@@ -159,33 +104,6 @@ impl DivAssign<f64> for Colour {
 }
 
 
-pub const BLACK: Colour = Colour {
-    r: 0.0,
-    g: 0.0,
-    b: 0.0,
-};
-pub const WHITE: Colour = Colour {
-    r: 1.0,
-    g: 1.0,
-    b: 1.0,
-};
-pub const RED: Colour = Colour {
-    r: 1.0,
-    g: 0.0,
-    b: 0.0,
-};
-pub const GREEN: Colour = Colour {
-    r: 0.0,
-    g: 1.0,
-    b: 0.0,
-};
-pub const BLUE: Colour = Colour {
-    r: 0.0,
-    g: 0.0,
-    b: 1.0,
-};
-
-
 pub struct Pixel {
     r: u8,
     g: u8,
@@ -209,14 +127,60 @@ impl From<Pixel> for [u8; 3] {
         [pix.r, pix.g, pix.b]
     }
 }
+*/
 
+fn parse_clr(hex: &str) -> Result<LinSrgb, ()> {
+    let hex = hex.trim_start_matches('#');
+
+    let len = hex.len();
+
+    if let 6 | 3 = len {
+        let hex: String =
+            if len == 6 {
+                hex.into()
+            } else {
+                hex.chars().flat_map(|c| [c; 2]).collect()
+            };
+
+        let int =
+            0xff000000 + 
+            match u32::from_str_radix(&hex, 16) {
+                Ok(int) => int,
+                Err(_) => return Err(()),
+            };
+
+        use palette::rgb::Srgb;
+        Ok(
+            Srgb::from_format(Rgb::from_u32::<Argb>(int)).into_linear()
+        )
+    } else {
+        Err(())
+    }
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(from = "String", into = "String")]
 pub struct Palette {
     pub path: String,
-    pub clrs: Vec<Colour>,
+    pub clrs: Vec<LinSrgb>,
 }
+
+/*
+impl FromStr for Palette {
+    type Err = !;
+
+    fn from_str(path: &str) -> Result<Self, Self::Err> {
+        let file = File::open(&path).unwrap();
+        let reader = BufReader::new(file);
+        let clrs = reader
+            .lines()
+            .map(|x| parse_clr(&x.unwrap()).unwrap())
+            .collect();
+
+        Ok(Palette { path: path.to_string(), clrs })
+    }
+}
+*/
 
 impl From<String> for Palette {
     fn from(path: String) -> Self {
@@ -224,7 +188,7 @@ impl From<String> for Palette {
         let reader = BufReader::new(file);
         let clrs = reader
             .lines()
-            .map(|x| x.unwrap().parse().unwrap())
+            .map(|x| parse_clr(&x.unwrap()).unwrap())
             .collect();
         Palette { path, clrs }
     }
@@ -237,7 +201,7 @@ impl From<Palette> for String {
 }
 
 impl Index<usize> for Palette {
-    type Output = Colour;
+    type Output = LinSrgb;
     fn index(&self, i: usize) -> &Self::Output {
         &self.clrs[i]
     }
@@ -248,6 +212,7 @@ impl Palette {
         self.clrs.len()
     }
 }
+
 
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

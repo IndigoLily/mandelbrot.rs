@@ -1,3 +1,5 @@
+#![feature(never_type)]
+
 use std::f64::consts::TAU;
 
 use num::Complex;
@@ -40,14 +42,14 @@ pub fn calc_at(c: Complex<f64>, stg: &Stg) -> EscapeTime {
     None
 }
 
-pub fn get_colour(escape: &EscapeTime, t: f64, stg: &Stg) -> Colour {
+pub fn get_colour(escape: &EscapeTime, t: f64, stg: &Stg) -> LinSrgb {
     if let Some(escape) = escape {
         match &stg.clr_algo {
             ColourAlgo::BW => colour::WHITE,
 
             ColourAlgo::Grey => {
                 let val = (escape * 2.0 + t * TAU).sin() / 2.0 + 0.5;
-                Colour::from([val; 3]).enc_gamma()
+                LinSrgb::new(val, val, val)
             },
 
             ColourAlgo::Bands(size) => {
@@ -69,13 +71,13 @@ pub fn get_colour(escape: &EscapeTime, t: f64, stg: &Stg) -> Colour {
                 }
             },
 
-            ColourAlgo::SineMult(r, g, b) => [r, g, b]
-                .map(|c| (escape / 2.0 * c + t * TAU).sin() / 2.0 + 0.5)
-                .into(),
+            ColourAlgo::SineMult(r, g, b) => *LinSrgb::from_raw(
+                &[r, g, b].map(|c| (escape / 2.0 * c + t * TAU).sin() / 2.0 + 0.5)
+            ),
 
-            ColourAlgo::SineAdd(r, g, b) => [r, g, b]
-                .map(|c| (escape * 2.0 + c * TAU + t * TAU).sin() / 2.0 + 0.5)
-                .into(),
+            ColourAlgo::SineAdd(r, g, b) => *LinSrgb::from_raw(
+                &[r, g, b].map(|c| (escape * 2.0 + c * TAU + t * TAU).sin() / 2.0 + 0.5)
+            ),
 
             ColourAlgo::Palette(colours) => {
                 let escape = escape + t * colours.len() as f64;
@@ -88,74 +90,74 @@ pub fn get_colour(escape: &EscapeTime, t: f64, stg: &Stg) -> Colour {
                 match &stg.interp {
                     Interpolation::None => colours[i1],
 
-                    Interpolation::Linear => [
-                        linear_interpolate(colours[i1].r, colours[i2].r, percent),
-                        linear_interpolate(colours[i1].g, colours[i2].g, percent),
-                        linear_interpolate(colours[i1].b, colours[i2].b, percent),
-                    ]
+                    Interpolation::Linear => (
+                        linear_interpolate(colours[i1].red, colours[i2].red, percent),
+                        linear_interpolate(colours[i1].green, colours[i2].green, percent),
+                        linear_interpolate(colours[i1].blue, colours[i2].blue, percent),
+                    )
                     .into(),
 
-                    Interpolation::Cosine => [
-                        cosine_interpolate(colours[i1].r, colours[i2].r, percent),
-                        cosine_interpolate(colours[i1].g, colours[i2].g, percent),
-                        cosine_interpolate(colours[i1].b, colours[i2].b, percent),
-                    ]
+                    Interpolation::Cosine => (
+                        cosine_interpolate(colours[i1].red, colours[i2].red, percent),
+                        cosine_interpolate(colours[i1].green, colours[i2].green, percent),
+                        cosine_interpolate(colours[i1].blue, colours[i2].blue, percent),
+                    )
                     .into(),
 
-                    Interpolation::Cubic => [
+                    Interpolation::Cubic => (
                         cubic_interpolate(
-                            colours[i0].r,
-                            colours[i1].r,
-                            colours[i2].r,
-                            colours[i3].r,
+                            colours[i0].red,
+                            colours[i1].red,
+                            colours[i2].red,
+                            colours[i3].red,
                             percent,
                         ),
                         cubic_interpolate(
-                            colours[i0].g,
-                            colours[i1].g,
-                            colours[i2].g,
-                            colours[i3].g,
+                            colours[i0].green,
+                            colours[i1].green,
+                            colours[i2].green,
+                            colours[i3].green,
                             percent,
                         ),
                         cubic_interpolate(
-                            colours[i0].b,
-                            colours[i1].b,
-                            colours[i2].b,
-                            colours[i3].b,
+                            colours[i0].blue,
+                            colours[i1].blue,
+                            colours[i2].blue,
+                            colours[i3].blue,
                             percent,
                         ),
-                    ]
+                    )
                     .into(),
 
-                    Interpolation::Hermite => [
+                    Interpolation::Hermite => (
                         hermite_interpolate(
-                            colours[i0].r,
-                            colours[i1].r,
-                            colours[i2].r,
-                            colours[i3].r,
-                            percent,
-                            0.0,
-                            0.0,
-                        ),
-                        hermite_interpolate(
-                            colours[i0].g,
-                            colours[i1].g,
-                            colours[i2].g,
-                            colours[i3].g,
+                            colours[i0].red,
+                            colours[i1].red,
+                            colours[i2].red,
+                            colours[i3].red,
                             percent,
                             0.0,
                             0.0,
                         ),
                         hermite_interpolate(
-                            colours[i0].b,
-                            colours[i1].b,
-                            colours[i2].b,
-                            colours[i3].b,
+                            colours[i0].green,
+                            colours[i1].green,
+                            colours[i2].green,
+                            colours[i3].green,
                             percent,
                             0.0,
                             0.0,
                         ),
-                    ]
+                        hermite_interpolate(
+                            colours[i0].blue,
+                            colours[i1].blue,
+                            colours[i2].blue,
+                            colours[i3].blue,
+                            percent,
+                            0.0,
+                            0.0,
+                        ),
+                    )
                     .into(),
                 }
             },
@@ -180,9 +182,9 @@ pub fn calc_aa(x: usize, y: usize, stg: &Stg) -> Vec<EscapeTime> {
 }
 
 #[inline]
-pub fn avg_colours(escapes: &[EscapeTime], t: f64, stg: &Stg) -> Colour {
+pub fn avg_colours(escapes: &[EscapeTime], t: f64, stg: &Stg) -> LinSrgb {
     escapes
         .iter()
-        .fold(Colour::default(), |clr, e| clr + get_colour(e, t, stg)) /
+        .fold(BLACK, |clr, e| clr + get_colour(e, t, stg)) /
         stg.aa_sq_f64
 }

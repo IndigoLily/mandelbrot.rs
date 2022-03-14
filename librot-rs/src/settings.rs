@@ -1,14 +1,16 @@
 use num::Complex;
-use serde::{Serialize, Deserialize};
+use palette::Pixel;
+//use serde::{Serialize, Deserialize};
 
-use crate::colour::{ColourAlgo, Colour};
+use crate::colour::{ColourAlgo, LinSrgb, Palette};
 use crate::interp::Interpolation;
 
 pub use clap::Parser;
 
-#[derive(Serialize, Deserialize, Parser)]
-#[serde(default)]
-#[clap(global_settings = &[clap::AppSettings::DeriveDisplayOrder])]
+//#[derive(Serialize, Deserialize, Parser)]
+//#[serde(default)]
+#[derive(Parser)]
+#[clap(global_setting = clap::AppSettings::DeriveDisplayOrder)]
 pub struct SettingsBuilder {
     #[clap(short, long, default_value_t = 1920)]
     pub width: usize,
@@ -16,16 +18,16 @@ pub struct SettingsBuilder {
     #[clap(short, long, default_value_t = 1080)]
     pub height: usize,
 
-    #[clap(short = 'x', long, default_value_t = 0.0)]
+    #[clap(short = 'x', long, default_value_t)]
     pub ctr_x: f64,
 
-    #[clap(short = 'y', long, default_value_t = 0.0)]
+    #[clap(short = 'y', long, default_value_t)]
     pub ctr_y: f64,
 
     #[clap(short, long, default_value_t = 1.0)]
     pub zoom: f64,
 
-    #[clap(short, long, default_value_t = 0.0)]
+    #[clap(short, long, default_value_t)]
     pub degrees: f64,
 
     #[clap(short = 'a', long, default_value_t = 1, name = "ANTI_ALIASING")]
@@ -43,35 +45,38 @@ pub struct SettingsBuilder {
     #[clap(short = 'A', long, default_value_t = 1.0, name = "ACCELERATION")]
     pub acc: f64,
 
-    #[clap(long, default_value_t = ColourAlgo::BW, name="COLOUR_ALGORITHM")]
-    pub clr_algo: ColourAlgo,
+    #[clap(short, long="palette", name="PALETTE")]
+    pub palette_path: Option<String>,
 
-    #[clap(short='i', long, default_value_t = Interpolation::None)]
+    #[clap(long, name="COLOUR_ALGORITHM", conflicts_with = "PALETTE")]
+    pub clr_algo: Option<ColourAlgo>,
+
+    #[clap(short='i', long, default_value_t = Interpolation::None, arg_enum)]
     pub interp: Interpolation,
 
     #[clap(short = 'I', long, default_value = "#000000")]
-    pub inside: Colour,
+    pub inside: palette::Srgb<u8>,
 
     #[clap(short, long, default_value_t = 1)]
     pub frames: usize,
 
-    #[clap(short = 't', long, default_value_t = 0.0)]
+    #[clap(short = 't', long, default_value_t)]
     pub start_time: f64,
 
     #[clap(short, long)]
     pub julia: bool,
 
-    #[clap(long = "julia_x", default_value_t = 0.0)]
+    #[clap(long = "julia_x", default_value_t)]
     pub julia_ctr_x: f64,
 
-    #[clap(long = "julia_y", default_value_t = 0.0)]
+    #[clap(long = "julia_y", default_value_t)]
     pub julia_ctr_y: f64,
 
-    #[serde(skip_serializing_if = "Option::is_none")]
     #[clap(short = 'T', long)]
     pub threads: Option<usize>,
 }
 
+/*
 impl Default for SettingsBuilder {
     fn default() -> Self {
         SettingsBuilder {
@@ -94,9 +99,10 @@ impl Default for SettingsBuilder {
             julia_ctr_x: 0.0,
             julia_ctr_y: 0.0,
 
-            clr_algo: ColourAlgo::BW,
+            palette_path: None,
+            clr_algo: Some(ColourAlgo::BW),
             interp: Interpolation::None,
-            inside: [0.0; 3].into(),
+            inside: palette::named::BLACK,
             speed: 1.0,
             acc: 1.0,
 
@@ -104,6 +110,7 @@ impl Default for SettingsBuilder {
         }
     }
 }
+*/
 
 impl SettingsBuilder {
     pub fn build(&self) -> Settings {
@@ -147,9 +154,14 @@ impl SettingsBuilder {
         let julia = self.julia;
         let julia_ctr = Complex::new(self.julia_ctr_x, self.julia_ctr_y);
 
-        let clr_algo = self.clr_algo.clone();
+        let clr_algo =
+            if let Some(path) = self.palette_path.as_ref().cloned() {
+                ColourAlgo::Palette(Palette::from(path))
+            } else {
+                self.clr_algo.clone().unwrap_or(ColourAlgo::BW)
+            };
         let interp = self.interp;
-        let inside = self.inside;
+        let inside: LinSrgb = *LinSrgb::from_raw(&self.inside.into_raw::<[u8;3]>().map(|c| c as f64 / u8::MAX as f64));
         let speed = self.speed;
         let acc = self.acc;
 
@@ -243,7 +255,7 @@ pub struct Settings {
 
     pub clr_algo: ColourAlgo,
     pub interp: Interpolation,
-    pub inside: Colour,
+    pub inside: LinSrgb,
     pub speed: f64,
     pub acc: f64,
 

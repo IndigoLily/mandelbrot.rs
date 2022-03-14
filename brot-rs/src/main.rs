@@ -18,7 +18,7 @@ use rayon::iter::IntoParallelIterator;
 use rayon::prelude::*;
 
 use librot_rs::*;
-use librot_rs::colour::Pixel;
+use librot_rs::colour::*;
 use settings::{Settings as Stg, SettingsBuilder, Parser};
 
 mod progress;
@@ -80,8 +80,8 @@ fn render(stg: &Arc<Stg>) {
                 let t = frame as f64 / stg.frames_f64;
                 let pix_row = escapes
                     .iter()
-                    .map(|escapes| Pixel::from(avg_colours(escapes, t, &stg)))
-                    .collect::<Vec<Pixel>>();
+                    .map(|escapes| LinSrgb::from(avg_colours(escapes, t, &stg)))
+                    .collect::<Vec<LinSrgb>>();
 
                 // wait for (frame,i)
                 #[allow(clippy::mutex_atomic)]
@@ -92,7 +92,7 @@ fn render(stg: &Arc<Stg>) {
 
                 let mut w = writers[frame].lock().unwrap();
                 for pix in pix_row {
-                    w.write_all(&<[u8; 3]>::from(pix)).unwrap();
+                    w.write_all(&pix.into_encoding::<encoding::srgb::Srgb>().into_raw::<[f64;3]>().map(|c| (c * u8::MAX as f64) as u8)).unwrap();
                 }
                 drop(w); // explicitly drop to make lock available as soon as possible
 
